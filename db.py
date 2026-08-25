@@ -1,6 +1,7 @@
 """
 Ma'lumotlar bazasi (SQLite). Bepul, fayl asosida, hech qanday server kerak emas.
 """
+import os
 import datetime as dt
 import aiosqlite
 from config import DB_PATH, DEFAULT_WORK_START, DEFAULT_WORK_END, GRACE_MINUTES, TZ
@@ -17,6 +18,10 @@ def now_local() -> dt.datetime:
 
 
 async def init_db():
+    # Baza papkasini yaratamiz (masalan /data) — Volume shu yerga ulanadi
+    parent = os.path.dirname(DB_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(
             """
@@ -225,3 +230,10 @@ async def get_settings_dict():
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT key, value FROM settings")
         return {k: v for k, v in await cur.fetchall()}
+
+
+async def count_employees():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM employees")
+        r = await cur.fetchone()
+        return r[0] if r else 0

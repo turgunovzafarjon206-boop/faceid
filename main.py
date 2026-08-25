@@ -24,7 +24,11 @@ log = logging.getLogger("main")
 
 async def main():
     await db.init_db()
-    log.info("Baza tayyor.")
+    import os
+    from config import DB_PATH
+    log.info("DB manzili: %s (fayl mavjud: %s)",
+             os.path.abspath(DB_PATH), os.path.exists(DB_PATH))
+    log.info("Bazada hozir %s ta xodim bor", await db.count_employees())
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=MemoryStorage())

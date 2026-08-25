@@ -34,7 +34,16 @@ DAILY_REPORT_TIME = os.getenv("DAILY_REPORT_TIME", "23:30")
 
 # --- Boshqa ---
 TZ = ZoneInfo(os.getenv("TZ", "Asia/Tashkent"))
-DB_PATH = os.getenv("DB_PATH", "faceid_bot.db")
+
+# --- Baza manzili ---
+# Railway Volume ulangan bo'lsa (RAILWAY_VOLUME_MOUNT_PATH), baza AVTOMATIK
+# o'sha diskka yoziladi — mount path /data, /date yoki boshqa bo'lsa ham farqi yo'q.
+# Bu ma'lumot deploy paytida o'chib ketmasligini kafolatlaydi.
+_vol = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip().rstrip("/")
+if _vol:
+    DB_PATH = f"{_vol}/faceid_bot.db"
+else:
+    DB_PATH = os.getenv("DB_PATH", "faceid_bot.db")
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN topilmadi. .env faylini to'ldiring.")
