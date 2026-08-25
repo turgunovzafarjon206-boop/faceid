@@ -3,6 +3,8 @@ Hisobotlarni hisoblash va matn ko'rinishida chiqarish (o'zbekcha).
 """
 import datetime as dt
 import db
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 
 def fmt_duration(minutes: int) -> str:
@@ -115,3 +117,84 @@ async def period_text(emp, day_from: str, day_to: str, title: str) -> str:
                     f"🔴 Kech qolgan kun: {late_days} kun\n")
     detail = "\n".join(lines) if lines else "Qayd yo'q."
     return head + summary + "\n" + detail
+
+
+# ==================== EXCEL HISOBOT ====================
+_HEAD_FILL = PatternFill("solid", fgColor="2F5496")
+_HEAD_FONT = Font(color="FFFFFF", bold=True)
+_CENTER = Alignment(horizontal="center", vertical="center")
+_THIN = Side(style="thin", color="BFBFBF")
+_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+
+
+def _style_header(ws, ncols):
+    for c in range(1, ncols + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.fill = _HEAD_FILL
+        cell.font = _HEAD_FONT
+        cell.alignment = _CENTER
+        cell.border = _BORDER
+
+
+def _autosize(ws):
+    for col in ws.columns:
+        width = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(width + 3, 40)
+
+
+async def build_period_excel(employees, day_from, day_to, title):
+    """Barcha xodimlar bo'yicha davr hisobotini .xlsx qilib yaratadi. Fayl yo'lini qaytaradi."""
+    wb = Workbook()
+
+    # 1-varaq: Umumiy
+    ws = wb.active
+    ws.title = "Umumiy"
+    ws.append(["Xodim", "Telefon", "Ishlagan kun", "Ishlangan vaqt",
+               "Soat (jami)", "Kech qolgan kun", "Kech qolish (daqiqa)"])
+
+    # 2-varaq: Kunlik
+    ws2 = wb.create_sheet("Kunlik")
+    ws2.append(["Xodim", "Sana", "Kirish", "Chiqish", "Ishlangan vaqt", "Kechikish (daqiqa)"])
+
+    for emp in employees:
+        rows = await db.events_between(emp["id"], day_from, day_to)
+        by_day = {}
+        for day, etype, ts in rows:
+            by_day.setdefault(day, []).append((etype, ts))
+
+        worked_total = late_total = late_days = worked_days = 0
+        for day in sorted(by_day):
+            r = compute_day(emp, by_day[day])
+            if not r:
+                continue
+            worked_days += 1
+            worked_total += r["ishlangan_min"]
+            late_total += r["kechikish_min"]
+            if r["kech_qoldi"]:
+                late_days += 1
+            ws2.append([
+                f"{emp['first_name']} {emp['last_name']}", day,
+                r["kirish"].strftime("%H:%M") if r["kirish"] else "",
+                r["chiqish"].strftime("%H:%M") if r["chiqish"] else "",
+                fmt_duration(r["ishlangan_min"]),
+                r["kechikish_min"] if emp["count_late"] else 0,
+            ])
+
+        ws.append([
+            f"{emp['first_name']} {emp['last_name']}", emp["phone"], worked_days,
+            fmt_duration(worked_total), round(worked_total / 60, 1),
+            late_days if emp["count_late"] else 0,
+            late_total if emp["count_late"] else 0,
+        ])
+
+    _style_header(ws, 7)
+    _style_header(ws2, 6)
+    _autosize(ws)
+    _autosize(ws2)
+    ws.freeze_panes = "A2"
+    ws2.freeze_panes = "A2"
+
+    safe = title.replace(" ", "_").replace("'", "")
+    path = f"/tmp/{safe}_{day_from}_{day_to}.xlsx"
+    wb.save(path)
+    return path

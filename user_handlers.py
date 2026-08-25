@@ -1,9 +1,9 @@
-"""Xodimlar uchun handlerlar: ro'yxatdan o'tish va hisobotlarni ko'rish."""
+"""Xodimlar uchun handlerlar: ro'yxatdan o'tish, FaceID hisobotlari, Mening ma'lumotlarim."""
 import datetime as dt
 import calendar
 from aiogram import Router, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -18,13 +18,23 @@ router = Router()
 class UserState(StatesGroup):
     wait_phone = State()
     wait_date = State()
-    wait_period = State()
+    edit_value = State()
 
 
 def today_str():
     return dt.datetime.now(TZ).strftime("%Y-%m-%d")
 
 
+async def _need_emp(obj):
+    uid = obj.from_user.id
+    emp = await db.get_employee_by_telegram(uid)
+    if not emp:
+        target = obj.message if isinstance(obj, CallbackQuery) else obj
+        await target.answer("Avval /start bosib ro'yxatdan o'ting.")
+    return emp
+
+
+# ==================== Ro'yxatdan o'tish ====================
 @router.message(CommandStart())
 async def start(msg: Message, state: FSMContext):
     await state.clear()
@@ -32,13 +42,11 @@ async def start(msg: Message, state: FSMContext):
     if emp:
         extra = "\n\n🔐 Admin: /admin" if msg.from_user.id in ADMIN_IDS else ""
         await msg.answer(
-            f"Assalomu alaykum, {emp['first_name']}! 👋\n"
-            f"Quyidagi menyudan foydalaning." + extra,
+            f"Assalomu alaykum, {emp['first_name']}! 👋\nQuyidagi menyudan foydalaning." + extra,
             reply_markup=kb.user_menu())
         return
     await msg.answer(
-        "Assalomu alaykum! 👋\n\n"
-        "Botdan foydalanish uchun telefon raqamingizni yuboring "
+        "Assalomu alaykum! 👋\n\nBotdan foydalanish uchun telefon raqamingizni yuboring "
         "(tugma orqali yoki qo'lda, masalan: 901234567).",
         reply_markup=kb.contact_kb())
     await state.set_state(UserState.wait_phone)
@@ -57,10 +65,8 @@ async def got_phone_text(msg: Message, state: FSMContext):
 async def _register(msg, state, phone):
     emp = await db.get_employee_by_phone(phone)
     if not emp:
-        await msg.answer(
-            "❌ Bu raqam bazada topilmadi.\n"
-            "Iltimos, administrator sizni tizimga qo'shganiga ishonch hosil qiling "
-            "va to'g'ri raqam yuboring.")
+        await msg.answer("❌ Bu raqam bazada topilmadi.\n"
+                         "Administrator sizni tizimga qo'shganiga ishonch hosil qiling.")
         return
     await db.bind_telegram(emp["id"], msg.from_user.id)
     await state.clear()
@@ -70,40 +76,38 @@ async def _register(msg, state, phone):
         reply_markup=kb.user_menu())
 
 
-# ---------------- Hisobotlar ----------------
-
-async def _need_emp(msg):
-    emp = await db.get_employee_by_telegram(msg.from_user.id)
-    if not emp:
-        await msg.answer("Avval /start bosib ro'yxatdan o'ting.")
-    return emp
+# ==================== 📷 FaceID bo'limi ====================
+@router.message(F.text == "📷 FaceID")
+async def m_faceid(msg: Message):
+    if await _need_emp(msg):
+        await msg.answer("📷 FaceID — hisobot turini tanlang:", reply_markup=kb.user_faceid_kb())
 
 
-@router.message(F.text == "📅 Bugun")
-async def r_today(msg: Message):
-    emp = await _need_emp(msg)
+@router.callback_query(F.data == "u:today")
+async def cb_today(cb: CallbackQuery):
+    emp = await _need_emp(cb)
     if emp:
-        await msg.answer(await reports.daily_text(emp, today_str()))
+        await cb.message.answer(await reports.daily_text(emp, today_str()))
+    await cb.answer()
 
 
-@router.message(F.text == "🗓 Bu oy")
-async def r_month(msg: Message):
-    emp = await _need_emp(msg)
-    if not emp:
-        return
-    now = dt.datetime.now(TZ)
-    first = now.replace(day=1).strftime("%Y-%m-%d")
-    last_day = calendar.monthrange(now.year, now.month)[1]
-    last = now.replace(day=last_day).strftime("%Y-%m-%d")
-    await msg.answer(await reports.period_text(emp, first, last, "Oylik hisobot"))
+@router.callback_query(F.data == "u:month")
+async def cb_month(cb: CallbackQuery):
+    emp = await _need_emp(cb)
+    if emp:
+        now = dt.datetime.now(TZ)
+        first = now.replace(day=1).strftime("%Y-%m-%d")
+        last = now.replace(day=calendar.monthrange(now.year, now.month)[1]).strftime("%Y-%m-%d")
+        await cb.message.answer(await reports.period_text(emp, first, last, "Oylik hisobot"))
+    await cb.answer()
 
 
-@router.message(F.text == "📆 Sana bo'yicha")
-async def ask_date(msg: Message, state: FSMContext):
-    if not await _need_emp(msg):
-        return
-    await state.set_state(UserState.wait_date)
-    await msg.answer("Sanani yuboring (format: YYYY-MM-DD, masalan 2026-08-15):")
+@router.callback_query(F.data == "u:date")
+async def cb_date(cb: CallbackQuery, state: FSMContext):
+    if await _need_emp(cb):
+        await state.set_state(UserState.wait_date)
+        await cb.message.answer("Sanani yuboring (format: YYYY-MM-DD, masalan 2026-08-15):")
+    await cb.answer()
 
 
 @router.message(UserState.wait_date, F.text)
@@ -118,26 +122,62 @@ async def got_date(msg: Message, state: FSMContext):
     await msg.answer(await reports.daily_text(emp, d))
 
 
-@router.message(F.text == "⏳ Davr bo'yicha")
-async def ask_period(msg: Message, state: FSMContext):
-    if not await _need_emp(msg):
-        return
-    await state.set_state(UserState.wait_period)
-    await msg.answer("Davrni yuboring (format: YYYY-MM-DD YYYY-MM-DD):\n"
-                     "Masalan: 2026-08-01 2026-08-15")
+# ==================== 👤 Mening ma'lumotlarim ====================
+@router.message(F.text == "👤 Mening ma'lumotlarim")
+async def m_myinfo(msg: Message):
+    if await _need_emp(msg):
+        await msg.answer("👤 Mening ma'lumotlarim:", reply_markup=kb.user_myinfo_kb())
 
 
-@router.message(UserState.wait_period, F.text)
-async def got_period(msg: Message, state: FSMContext):
+@router.callback_query(F.data == "u:info:view")
+async def cb_info_view(cb: CallbackQuery):
+    emp = await _need_emp(cb)
+    if emp:
+        late = "hisoblanadi" if emp["count_late"] else "hisoblanmaydi"
+        await cb.message.answer(
+            f"👤 {emp['first_name']} {emp['last_name']}\n"
+            f"📞 Telefon: {emp['phone']}\n"
+            f"🆔 FaceID ID: {emp['faceid_user_id']}\n"
+            f"🕐 Ish grafigi: {emp['work_start']}-{emp['work_end']}\n"
+            f"⏰ Kechikish: {late}")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "u:info:edit")
+async def cb_info_edit(cb: CallbackQuery):
+    if await _need_emp(cb):
+        await cb.message.answer(
+            "Nimani o'zgartirmoqchisiz?\n"
+            "(FaceID ID va ish grafigini faqat administrator o'zgartiradi.)",
+            reply_markup=kb.user_edit_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("u:edit:"))
+async def cb_edit_field(cb: CallbackQuery, state: FSMContext):
+    field = cb.data.split(":")[2]
+    await state.set_state(UserState.edit_value)
+    await state.update_data(field=field)
+    prompt = ("Yangi Ism va Familiya (masalan: Ali Valiyev):" if field == "name"
+              else "Yangi telefon raqam (901234567):")
+    await cb.message.answer(prompt)
+    await cb.answer()
+
+
+@router.message(UserState.edit_value, F.text)
+async def save_user_edit(msg: Message, state: FSMContext):
     emp = await db.get_employee_by_telegram(msg.from_user.id)
-    parts = msg.text.strip().split()
+    data = await state.get_data()
+    field, val = data["field"], msg.text.strip()
     try:
-        d1 = dt.datetime.strptime(parts[0], "%Y-%m-%d").strftime("%Y-%m-%d")
-        d2 = dt.datetime.strptime(parts[1], "%Y-%m-%d").strftime("%Y-%m-%d")
-    except (ValueError, IndexError):
-        await msg.answer("❌ Noto'g'ri format. Masalan: 2026-08-01 2026-08-15")
+        if field == "name":
+            parts = val.split()
+            await db.update_employee(emp["id"], first_name=parts[0],
+                                     last_name=" ".join(parts[1:]) or parts[0])
+        elif field == "phone":
+            await db.update_employee(emp["id"], phone=val)
+    except Exception as e:
+        await msg.answer(f"❌ Xatolik: {e}")
         return
     await state.clear()
-    if d1 > d2:
-        d1, d2 = d2, d1
-    await msg.answer(await reports.period_text(emp, d1, d2, "Davr hisoboti"))
+    await msg.answer("✅ Saqlandi.", reply_markup=kb.user_menu())
