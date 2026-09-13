@@ -13,6 +13,8 @@ import db
 from config import BOT_TOKEN
 import user_handlers
 import admin_handlers
+import forms_handlers
+import survey_handlers
 from scheduler import faceid_poller, daily_report_loop
 
 logging.basicConfig(
@@ -36,6 +38,8 @@ async def main():
 
     # Admin routeri birinchi (admin tugmalari ustunlik olishi uchun)
     dp.include_router(admin_handlers.router)
+    dp.include_router(forms_handlers.router)
+    dp.include_router(survey_handlers.router)
     dp.include_router(user_handlers.router)
 
     # Fon jarayonlari

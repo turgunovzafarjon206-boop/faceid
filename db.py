@@ -73,6 +73,59 @@ async def init_db():
                 note TEXT,
                 added_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS data_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                dtype TEXT NOT NULL,          -- text | photo | file
+                dep_id INTEGER,               -- NULL = hammaga (umumiy)
+                deadline TEXT,                -- YYYY-MM-DD yoki NULL
+                mandatory INTEGER DEFAULT 0,  -- 1 majburiy, 0 ixtiyoriy
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS data_submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER NOT NULL,
+                employee_id INTEGER NOT NULL,
+                content TEXT,                 -- matn yoki file_id
+                kind TEXT,
+                submitted_at TEXT,
+                UNIQUE(request_id, employee_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS surveys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                dep_id INTEGER,               -- NULL = hammaga
+                active INTEGER DEFAULT 1,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS survey_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                survey_id INTEGER NOT NULL,
+                qtext TEXT NOT NULL,
+                image_file_id TEXT,
+                ord INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS survey_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                question_id INTEGER NOT NULL,
+                otext TEXT NOT NULL,
+                ord INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS survey_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                survey_id INTEGER NOT NULL,
+                question_id INTEGER NOT NULL,
+                option_id INTEGER NOT NULL,
+                employee_id INTEGER NOT NULL,
+                answered_at TEXT,
+                UNIQUE(question_id, employee_id)
+            );
             """
         )
         # Migratsiya: employees jadvaliga department_id ustunini qo'shamiz (bo'lmasa)
@@ -425,3 +478,244 @@ async def list_admin_ids():
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT telegram_id FROM admins")
         return [r[0] for r in await cur.fetchall()]
+
+
+# ==================== A: MA'LUMOT TALABLARI ====================
+def _emp_matches_dep(emp, dep_id):
+    return dep_id is None or emp.get("department_id") == dep_id
+
+
+async def add_data_request(title, dtype, dep_id, deadline, mandatory):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO data_requests(title,dtype,dep_id,deadline,mandatory,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (title, dtype, dep_id, deadline, 1 if mandatory else 0, now_local().isoformat()))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_data_request(req_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id,title,dtype,dep_id,deadline,mandatory FROM data_requests WHERE id=?", (req_id,))
+        r = await cur.fetchone()
+        if not r:
+            return None
+        return {"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
+                "deadline": r[4], "mandatory": r[5]}
+
+
+async def list_data_requests():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT r.id,r.title,r.dtype,r.dep_id,r.deadline,r.mandatory,
+                      (SELECT COUNT(*) FROM data_submissions s WHERE s.request_id=r.id)
+               FROM data_requests r ORDER BY r.id DESC""")
+        out = []
+        for r in await cur.fetchall():
+            out.append({"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
+                        "deadline": r[4], "mandatory": r[5], "subs": r[6]})
+        return out
+
+
+async def delete_data_request(req_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM data_submissions WHERE request_id=?", (req_id,))
+        await db.execute("DELETE FROM data_requests WHERE id=?", (req_id,))
+        await db.commit()
+
+
+async def add_submission(request_id, employee_id, content, kind):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO data_submissions(request_id,employee_id,content,kind,submitted_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(request_id,employee_id) "
+            "DO UPDATE SET content=excluded.content, kind=excluded.kind, submitted_at=excluded.submitted_at",
+            (request_id, employee_id, content, kind, now_local().isoformat()))
+        await db.commit()
+
+
+async def request_submissions(request_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT e.first_name,e.last_name,e.phone,s.content,s.kind,s.submitted_at,s.employee_id
+               FROM data_submissions s JOIN employees e ON e.id=s.employee_id
+               WHERE s.request_id=? ORDER BY s.submitted_at""", (request_id,))
+        return [{"first_name": r[0], "last_name": r[1], "phone": r[2], "content": r[3],
+                 "kind": r[4], "at": r[5], "emp_id": r[6]} for r in await cur.fetchall()]
+
+
+async def pending_requests_for(emp):
+    """Xodimga tegishli (dep mos), hali topshirilmagan talablar."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id,title,dtype,dep_id,deadline,mandatory FROM data_requests")
+        reqs = await cur.fetchall()
+        cur2 = await db.execute("SELECT request_id FROM data_submissions WHERE employee_id=?", (emp["id"],))
+        done = {r[0] for r in await cur2.fetchall()}
+    out = []
+    for r in reqs:
+        req = {"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
+               "deadline": r[4], "mandatory": r[5]}
+        if req["id"] in done:
+            continue
+        if _emp_matches_dep(emp, req["dep_id"]):
+            out.append(req)
+    return out
+
+
+async def eligible_linked_for_request(req):
+    emps = await linked_employees()
+    return [e for e in emps if _emp_matches_dep(e, req["dep_id"])]
+
+
+# ==================== B: SO'ROVNOMALAR ====================
+async def create_survey(title, dep_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO surveys(title,dep_id,active,created_at) VALUES(?,?,1,?)",
+            (title, dep_id, now_local().isoformat()))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def add_question(survey_id, qtext, image_file_id, ord):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO survey_questions(survey_id,qtext,image_file_id,ord) VALUES(?,?,?,?)",
+            (survey_id, qtext, image_file_id, ord))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def add_option(question_id, otext, ord):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO survey_options(question_id,otext,ord) VALUES(?,?,?)",
+            (question_id, otext, ord))
+        await db.commit()
+
+
+async def get_survey(survey_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id,title,dep_id,active FROM surveys WHERE id=?", (survey_id,))
+        r = await cur.fetchone()
+        return {"id": r[0], "title": r[1], "dep_id": r[2], "active": r[3]} if r else None
+
+
+async def list_surveys():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT s.id,s.title,s.dep_id,s.active,
+                      (SELECT COUNT(DISTINCT employee_id) FROM survey_answers a WHERE a.survey_id=s.id)
+               FROM surveys s ORDER BY s.id DESC""")
+        return [{"id": r[0], "title": r[1], "dep_id": r[2], "active": r[3], "responders": r[4]}
+                for r in await cur.fetchall()]
+
+
+async def survey_questions(survey_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT id,qtext,image_file_id,ord FROM survey_questions WHERE survey_id=? ORDER BY ord,id",
+            (survey_id,))
+        return [{"id": r[0], "qtext": r[1], "image_file_id": r[2], "ord": r[3]}
+                for r in await cur.fetchall()]
+
+
+async def question_options(question_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT id,otext,ord FROM survey_options WHERE question_id=? ORDER BY ord,id",
+            (question_id,))
+        return [{"id": r[0], "otext": r[1], "ord": r[2]} for r in await cur.fetchall()]
+
+
+async def record_answer(survey_id, question_id, option_id, employee_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO survey_answers(survey_id,question_id,option_id,employee_id,answered_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(question_id,employee_id) "
+            "DO UPDATE SET option_id=excluded.option_id, answered_at=excluded.answered_at",
+            (survey_id, question_id, option_id, employee_id, now_local().isoformat()))
+        await db.commit()
+
+
+async def survey_stats(survey_id):
+    """Har bir savol -> variantlar va nechta kishi tanlagani."""
+    qs = await survey_questions(survey_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        result = []
+        for q in qs:
+            opts = await question_options(q["id"])
+            data = []
+            total = 0
+            for o in opts:
+                cur = await db.execute(
+                    "SELECT COUNT(*) FROM survey_answers WHERE question_id=? AND option_id=?",
+                    (q["id"], o["id"]))
+                c = (await cur.fetchone())[0]
+                total += c
+                data.append({"otext": o["otext"], "count": c})
+            result.append({"qtext": q["qtext"], "options": data, "total": total})
+        return result
+
+
+async def survey_detailed(survey_id):
+    """Har bir xodim -> savolларга bergan javoblari."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT e.first_name,e.last_name,q.qtext,o.otext,a.answered_at
+               FROM survey_answers a
+               JOIN employees e ON e.id=a.employee_id
+               JOIN survey_questions q ON q.id=a.question_id
+               JOIN survey_options o ON o.id=a.option_id
+               WHERE a.survey_id=? ORDER BY e.last_name,e.first_name,q.ord,q.id""",
+            (survey_id,))
+        rows = await cur.fetchall()
+    by_emp = {}
+    for fn, ln, qt, ot, at in rows:
+        key = f"{fn} {ln}"
+        by_emp.setdefault(key, []).append((qt, ot))
+    return by_emp
+
+
+async def delete_survey(survey_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM survey_answers WHERE survey_id=?", (survey_id,))
+        qs = await db.execute("SELECT id FROM survey_questions WHERE survey_id=?", (survey_id,))
+        qids = [r[0] for r in await qs.fetchall()]
+        for qid in qids:
+            await db.execute("DELETE FROM survey_options WHERE question_id=?", (qid,))
+        await db.execute("DELETE FROM survey_questions WHERE survey_id=?", (survey_id,))
+        await db.execute("DELETE FROM surveys WHERE id=?", (survey_id,))
+        await db.commit()
+
+
+async def has_completed_survey(emp_id, survey_id):
+    qs = await survey_questions(survey_id)
+    if not qs:
+        return True
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT COUNT(DISTINCT question_id) FROM survey_answers WHERE survey_id=? AND employee_id=?",
+            (survey_id, emp_id))
+        answered = (await cur.fetchone())[0]
+    return answered >= len(qs)
+
+
+async def pending_surveys_for(emp):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id,title,dep_id FROM surveys WHERE active=1")
+        rows = await cur.fetchall()
+    out = []
+    for r in rows:
+        s = {"id": r[0], "title": r[1], "dep_id": r[2]}
+        if not _emp_matches_dep(emp, s["dep_id"]):
+            continue
+        if not await has_completed_survey(emp["id"], s["id"]):
+            out.append(s)
+    return out
+
+
+async def eligible_linked_for_survey(survey):
+    emps = await linked_employees()
+    return [e for e in emps if _emp_matches_dep(e, survey["dep_id"])]

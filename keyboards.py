@@ -15,6 +15,7 @@ def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📷 FaceID"), KeyboardButton(text="👤 Mening ma'lumotlarim")],
+            [KeyboardButton(text="📋 To'ldirish"), KeyboardButton(text="📊 So'rovnomalar")],
             [KeyboardButton(text="✉️ Adminga xabar")],
         ],
         resize_keyboard=True,
@@ -50,6 +51,7 @@ def admin_menu():
             [KeyboardButton(text="📷 FaceID boshqarish")],
             [KeyboardButton(text="👥 Ma'lumotlar"), KeyboardButton(text="🏢 Bo'limlar")],
             [KeyboardButton(text="✉️ Xabar"), KeyboardButton(text="🔔 Eslatma")],
+            [KeyboardButton(text="📋 Ma'lumot talablari"), KeyboardButton(text="📊 So'rovnoma")],
             [KeyboardButton(text="🔙 Oddiy menyu")],
         ],
         resize_keyboard=True,
@@ -221,3 +223,113 @@ def employee_manage_kb(emp):
         [InlineKeyboardButton(text="📊 Hisobot (bu oy)", callback_data=f"report:{emp['id']}")],
         [InlineKeyboardButton(text="🗑 O'chirish (nofaol)", callback_data=f"deactivate:{emp['id']}")],
     ])
+
+
+# ==================== A: Ma'lumot talablari ====================
+def datareq_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Talab qo'shish", callback_data="dr:add")],
+        [InlineKeyboardButton(text="📋 Talablar ro'yxati", callback_data="dr:list")],
+    ])
+
+
+def dtype_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Matn", callback_data="drtype:text")],
+        [InlineKeyboardButton(text="🖼 Rasm", callback_data="drtype:photo")],
+        [InlineKeyboardButton(text="📎 Fayl", callback_data="drtype:file")],
+    ])
+
+
+def dr_target_kb(deps):
+    kb = [[InlineKeyboardButton(text="📢 Hammaga (umumiy)", callback_data="drtar:all")]]
+    for d in deps:
+        kb.append([InlineKeyboardButton(text=f"🏢 {d['name']}", callback_data=f"drtar:d:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def dr_mandatory_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔴 Majburiy", callback_data="drman:1"),
+         InlineKeyboardButton(text="🟢 Ixtiyoriy", callback_data="drman:0")],
+    ])
+
+
+def dr_list_kb(reqs):
+    kb = []
+    for r in reqs:
+        kb.append([InlineKeyboardButton(text=f"{r['title']} ({r['subs']} ta)",
+                                        callback_data=f"drshow:{r['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def dr_actions_kb(req_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👁 Topshirganlar", callback_data=f"drsubs:{req_id}")],
+        [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"drdel:{req_id}")],
+    ])
+
+
+def pending_reqs_kb(reqs):
+    kb = []
+    for r in reqs:
+        mark = "🔴" if r["mandatory"] else "🟢"
+        kb.append([InlineKeyboardButton(text=f"{mark} {r['title']}", callback_data=f"fillreq:{r['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+# ==================== B: So'rovnoma ====================
+def survey_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ So'rovnoma yaratish", callback_data="sv:add")],
+        [InlineKeyboardButton(text="📋 So'rovnomalar", callback_data="sv:list")],
+    ])
+
+
+def sv_target_kb(deps):
+    kb = [[InlineKeyboardButton(text="📢 Hammaga", callback_data="svtar:all")]]
+    for d in deps:
+        kb.append([InlineKeyboardButton(text=f"🏢 {d['name']}", callback_data=f"svtar:d:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def sv_addq_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Yana savol", callback_data="svq:more")],
+        [InlineKeyboardButton(text="✅ Tugatish va yuborish", callback_data="svq:done")],
+    ])
+
+
+def sv_list_kb(surveys):
+    kb = []
+    for s in surveys:
+        act = "🟢" if s["active"] else "⚪️"
+        kb.append([InlineKeyboardButton(text=f"{act} {s['title']} ({s['responders']} javob)",
+                                        callback_data=f"svshow:{s['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def sv_actions_kb(sid, active):
+    rows = [
+        [InlineKeyboardButton(text="📊 Statistika (raqamli)", callback_data=f"svstat:{sid}")],
+        [InlineKeyboardButton(text="👥 Kim nima javob berdi", callback_data=f"svdet:{sid}")],
+    ]
+    if active:
+        rows.append([InlineKeyboardButton(text="⏹ To'xtatish", callback_data=f"svstop:{sid}")])
+    rows.append([InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"svdel:{sid}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def pending_surveys_kb(surveys):
+    kb = []
+    for s in surveys:
+        kb.append([InlineKeyboardButton(text=f"📊 {s['title']}", callback_data=f"svstart:{s['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def survey_options_kb(survey_id, q):
+    rows = []
+    for o in q["_options"]:
+        rows.append([InlineKeyboardButton(
+            text=o["otext"], callback_data=f"svans:{survey_id}:{q['id']}:{o['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
