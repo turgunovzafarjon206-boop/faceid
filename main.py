@@ -29,6 +29,7 @@ async def main():
     log.info("DB manzili: %s (fayl mavjud: %s)",
              os.path.abspath(DB_PATH), os.path.exists(DB_PATH))
     log.info("Bazada hozir %s ta xodim bor", await db.count_employees())
+    await admin_handlers.load_admins()
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=MemoryStorage())

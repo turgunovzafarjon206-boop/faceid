@@ -67,6 +67,12 @@ async def init_db():
                 last_seen TEXT,
                 cnt INTEGER DEFAULT 1
             );
+
+            CREATE TABLE IF NOT EXISTS admins (
+                telegram_id INTEGER PRIMARY KEY,
+                note TEXT,
+                added_at TEXT
+            );
             """
         )
         # Migratsiya: employees jadvaliga department_id ustunini qo'shamiz (bo'lmasa)
@@ -390,3 +396,30 @@ DEFAULT_TPL_OUT = "🔴 Chiqish qayd etildi\n🕐 Vaqt: {time}\n⏱ Ishlangan va
 async def get_template(key, default=""):
     v = await get_setting(key)
     return v if v else default
+
+
+# ---------------- Adminlar (bot orqali qo'shiladigan) ----------------
+async def add_admin(telegram_id, note=""):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO admins(telegram_id,note,added_at) VALUES(?,?,?)",
+            (int(telegram_id), note, now_local().isoformat()))
+        await db.commit()
+
+
+async def remove_admin(telegram_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM admins WHERE telegram_id=?", (int(telegram_id),))
+        await db.commit()
+
+
+async def list_admins():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT telegram_id, note FROM admins ORDER BY added_at")
+        return [{"telegram_id": r[0], "note": r[1]} for r in await cur.fetchall()]
+
+
+async def list_admin_ids():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT telegram_id FROM admins")
+        return [r[0] for r in await cur.fetchall()]

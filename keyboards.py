@@ -119,6 +119,25 @@ def admin_data_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")],
         [InlineKeyboardButton(text="👥 Xodimlar ro'yxati", callback_data="a:listemp")],
+        [InlineKeyboardButton(text="👑 Adminlar", callback_data="a:admins")],
+        [InlineKeyboardButton(text="💾 Zaxira nusxa", callback_data="a:backup"),
+         InlineKeyboardButton(text="♻️ Tiklash", callback_data="a:restore")],
+    ])
+
+
+def admins_kb(admin_list):
+    kb = []
+    for a in admin_list:
+        label = f"🗑 {a['note'] or a['telegram_id']}"
+        kb.append([InlineKeyboardButton(text=label, callback_data=f"admdel:{a['telegram_id']}")])
+    kb.append([InlineKeyboardButton(text="➕ Admin qo'shish", callback_data="adm:add")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def restore_confirm_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Ha, tiklash", callback_data="restore:yes"),
+         InlineKeyboardButton(text="❌ Bekor", callback_data="restore:no")],
     ])
 
 
@@ -181,6 +200,7 @@ def employee_manage_kb(emp):
         [InlineKeyboardButton(text="🕐 Ish grafigi", callback_data=f"edit:schedule:{emp['id']}")],
         [InlineKeyboardButton(text=late, callback_data=f"togglelate:{emp['id']}")],
         [InlineKeyboardButton(text="🏢 Bo'lim tayinlash", callback_data=f"empdep:{emp['id']}")],
+        [InlineKeyboardButton(text="👑 Admin qilish", callback_data=f"empadm:{emp['id']}")],
         [InlineKeyboardButton(text="📊 Hisobot (bu oy)", callback_data=f"report:{emp['id']}")],
         [InlineKeyboardButton(text="🗑 O'chirish (nofaol)", callback_data=f"deactivate:{emp['id']}")],
     ])

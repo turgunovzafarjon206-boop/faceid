@@ -15,9 +15,25 @@ from config import ADMIN_IDS, TZ
 
 router = Router()
 
+# Bot orqali qo'shilgan adminlar (xotirada, startda yuklanadi)
+EXTRA_ADMINS = set()
+
+
+def is_super(uid) -> bool:
+    """Asosiy admin (env ADMIN_IDS) — faqat ular admin qo'sha/o'chira oladi."""
+    return uid in ADMIN_IDS
+
 
 def is_admin(uid) -> bool:
-    return uid in ADMIN_IDS
+    return uid in ADMIN_IDS or uid in EXTRA_ADMINS
+
+
+async def load_admins():
+    global EXTRA_ADMINS
+    try:
+        EXTRA_ADMINS = set(await db.list_admin_ids())
+    except Exception:
+        EXTRA_ADMINS = set()
 
 
 class AddEmp(StatesGroup):
@@ -54,6 +70,14 @@ class TplState(StatesGroup):
 
 class ReminderState(StatesGroup):
     text = State()
+
+
+class AdminAdd(StatesGroup):
+    value = State()
+
+
+class RestoreState(StatesGroup):
+    wait_file = State()
 
 
 def _month_range():
@@ -718,3 +742,187 @@ async def rem_send_do(msg: Message, state: FSMContext):
             "❌ Guruhga yuborib bo'lmadi (userbot ishlamayapti yoki guruh hali aniqlanmagan).\n"
             "Guruhga kamida bitta qurilma xabari kelgach, guruh avtomatik aniqlanadi.\n\n"
             f"Ro'yxat:\n{names}", reply_markup=kb.admin_menu())
+
+
+# ==================== Adminlar boshqaruvi ====================
+@router.message(Command("id"))
+async def cmd_id(msg: Message):
+    await msg.answer(f"🆔 Sizning Telegram ID: `{msg.from_user.id}`", parse_mode="Markdown")
+
+
+@router.callback_query(F.data == "a:admins")
+async def admins_menu(cb: CallbackQuery):
+    if not is_super(cb.from_user.id):
+        return await cb.answer("Faqat asosiy admin boshqaradi", show_alert=True)
+    dbadmins = await db.list_admins()
+    lines = ["👑 Adminlar:\n"]
+    lines.append("Asosiy (o'zgarmas):")
+    for a in ADMIN_IDS:
+        lines.append(f"  • {a}")
+    lines.append("\nQo'shilganlar:")
+    if dbadmins:
+        for a in dbadmins:
+            lines.append(f"  • {a['note'] or ''} ({a['telegram_id']})")
+    else:
+        lines.append("  — yo'q —")
+    lines.append("\nO'chirish uchun ustiga bosing yoki yangi qo'shing:")
+    await cb.message.answer("\n".join(lines), reply_markup=kb.admins_kb(dbadmins))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "adm:add")
+async def adm_add(cb: CallbackQuery, state: FSMContext):
+    if not is_super(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q", show_alert=True)
+    await state.set_state(AdminAdd.value)
+    await cb.message.answer(
+        "Yangi admin qo'shish. Uning Telegram ID raqamini yuboring.\n\n"
+        "💡 ID ni bilish uchun o'sha odam botga /id yozsin.\n"
+        "Yoki xodimning ismini yozing (agar u botga ulangan bo'lsa).")
+    await cb.answer()
+
+
+@router.message(AdminAdd.value, F.text)
+async def adm_add_save(msg: Message, state: FSMContext):
+    val = msg.text.strip()
+    await state.clear()
+    tg_id = None
+    note = ""
+    if val.isdigit():
+        tg_id = int(val)
+        note = f"ID {tg_id}"
+        # agar shu ID xodim bo'lsa, ismini yozamiz
+        for e in await db.list_employees():
+            if e["telegram_id"] == tg_id:
+                note = f"{e['first_name']} {e['last_name']}"
+                break
+    else:
+        emp = await db.get_employee_by_name(val)
+        if emp and emp["telegram_id"]:
+            tg_id = emp["telegram_id"]
+            note = f"{emp['first_name']} {emp['last_name']}"
+        elif emp and not emp["telegram_id"]:
+            await msg.answer("❌ Bu xodim hali botga /start bosmagan. Avval u ulanishi kerak.",
+                             reply_markup=kb.admin_menu())
+            return
+        else:
+            await msg.answer("❌ Topilmadi. Telegram ID raqam yuboring yoki to'g'ri ism yozing.",
+                             reply_markup=kb.admin_menu())
+            return
+    await db.add_admin(tg_id, note)
+    await load_admins()
+    await msg.answer(f"✅ Admin qo'shildi: {note}", reply_markup=kb.admin_menu())
+    try:
+        await msg.bot.send_message(tg_id, "👑 Sizga admin huquqi berildi. /admin bosing.")
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("admdel:"))
+async def adm_del(cb: CallbackQuery):
+    if not is_super(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q", show_alert=True)
+    tg_id = int(cb.data.split(":")[1])
+    await db.remove_admin(tg_id)
+    await load_admins()
+    await cb.answer("O'chirildi")
+    await cb.message.answer("🗑 Admin o'chirildi.")
+
+
+@router.callback_query(F.data.startswith("empadm:"))
+async def emp_make_admin(cb: CallbackQuery):
+    if not is_super(cb.from_user.id):
+        return await cb.answer("Faqat asosiy admin", show_alert=True)
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    if not emp["telegram_id"]:
+        return await cb.answer("Xodim botga ulanmagan", show_alert=True)
+    note = f"{emp['first_name']} {emp['last_name']}"
+    await db.add_admin(emp["telegram_id"], note)
+    await load_admins()
+    await cb.answer("Admin qilindi ✅")
+    await cb.message.answer(f"👑 {note} endi admin.")
+    try:
+        await cb.bot.send_message(emp["telegram_id"], "👑 Sizga admin huquqi berildi. /admin bosing.")
+    except Exception:
+        pass
+
+
+# ==================== Zaxira (backup) va tiklash ====================
+@router.callback_query(F.data == "a:backup")
+async def backup_db(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    from config import DB_PATH
+    import os
+    if not os.path.exists(DB_PATH):
+        return await cb.answer("Baza fayli topilmadi", show_alert=True)
+    ts = dt.datetime.now(TZ).strftime("%Y%m%d_%H%M")
+    await cb.message.answer_document(
+        FSInputFile(DB_PATH, filename=f"backup_{ts}.db"),
+        caption="💾 Bazaning zaxira nusxasi.\nUni saqlab qo'ying — kerak bo'lsa 'Tiklash' orqali qaytarasiz.")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "a:restore")
+async def restore_start(cb: CallbackQuery, state: FSMContext):
+    if not is_super(cb.from_user.id):
+        return await cb.answer("Faqat asosiy admin", show_alert=True)
+    await state.set_state(RestoreState.wait_file)
+    await cb.message.answer(
+        "♻️ Tiklash. Avval olingan zaxira (.db) faylini yuboring.\n"
+        "⚠️ Hozirgi ma'lumotlar ustiga yoziladi!")
+    await cb.answer()
+
+
+@router.message(RestoreState.wait_file, F.document)
+async def restore_got_file(msg: Message, state: FSMContext):
+    doc = msg.document
+    if not doc.file_name.endswith(".db"):
+        await msg.answer("❌ Faqat .db fayl yuboring.")
+        return
+    path = f"/tmp/restore_{doc.file_unique_id}.db"
+    await msg.bot.download(doc, destination=path)
+    await state.update_data(path=path)
+    await msg.answer("Shu fayl bilan hozirgi bazani almashtiraymi? Bu qaytarib bo'lmaydi.",
+                     reply_markup=kb.restore_confirm_kb())
+
+
+@router.callback_query(F.data == "restore:no")
+async def restore_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.answer("❌ Bekor qilindi.", reply_markup=kb.admin_menu())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "restore:yes")
+async def restore_do(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    path = data.get("path")
+    from config import DB_PATH
+    import os, shutil
+    try:
+        # tekshiruv: haqiqiy sqlite bazami
+        import sqlite3
+        conn = sqlite3.connect(path)
+        conn.execute("SELECT count(*) FROM employees")
+        conn.close()
+    except Exception:
+        await cb.message.answer("❌ Bu to'g'ri baza fayli emas. Bekor qilindi.",
+                                reply_markup=kb.admin_menu())
+        return
+    try:
+        shutil.copyfile(path, DB_PATH)
+        await load_admins()
+        n = await db.count_employees()
+        await cb.message.answer(f"✅ Baza tiklandi. Endi {n} ta xodim bor.",
+                                reply_markup=kb.admin_menu())
+    except Exception as e:
+        await cb.message.answer(f"❌ Tiklashda xatolik: {e}", reply_markup=kb.admin_menu())
+    finally:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    await cb.answer()
