@@ -41,16 +41,21 @@ async def sv_add(cb: CallbackQuery, state: FSMContext):
 @router.message(NewSurvey.title, F.text)
 async def sv_title(msg: Message, state: FSMContext):
     await state.update_data(title=msg.text.strip())
-    await state.set_state(NewSurvey.target)
+    await state.set_state(None)
     deps = await db.list_departments()
     await msg.answer("Kimlarga yuborilsin?", reply_markup=kb.sv_target_kb(deps))
 
 
-@router.callback_query(NewSurvey.target, F.data.startswith("svtar:"))
+@router.callback_query(F.data.startswith("svtar:"))
 async def sv_target(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    data = await state.get_data()
+    if "title" not in data:
+        await cb.answer("Sessiya tugagan, qaytadan boshlang", show_alert=True)
+        return
     parts = cb.data.split(":")
     dep_id = None if parts[1] == "all" else int(parts[2])
-    data = await state.get_data()
     sid = await db.create_survey(data["title"], dep_id)
     await state.update_data(survey_id=sid, qcount=0)
     await state.set_state(NewSurvey.qtext)

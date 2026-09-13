@@ -16,7 +16,7 @@ def user_menu():
         keyboard=[
             [KeyboardButton(text="📷 FaceID"), KeyboardButton(text="👤 Mening ma'lumotlarim")],
             [KeyboardButton(text="📋 To'ldirish"), KeyboardButton(text="📊 So'rovnomalar")],
-            [KeyboardButton(text="✉️ Adminga xabar")],
+            [KeyboardButton(text="✉️ HR bo'limiga xabar")],
         ],
         resize_keyboard=True,
     )
@@ -62,6 +62,7 @@ def admin_faceid_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚙️ Qurilma sozlamalari", callback_data="a:fset")],
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
+        [InlineKeyboardButton(text="💰 Jarima ko'rinishi (xodimga)", callback_data="a:finetoggle")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
         [InlineKeyboardButton(text="📋 Bugungi holat", callback_data="a:today")],
@@ -204,8 +205,9 @@ def faceid_mode_kb():
 def employees_kb(employees):
     kb = []
     for e in employees:
+        mark = "🟢" if e["telegram_id"] else "🔴"
         kb.append([InlineKeyboardButton(
-            text=f"{e['first_name']} {e['last_name']} ({e['phone']})",
+            text=f"{mark} {e['first_name']} {e['last_name']} ({e['phone']})",
             callback_data=f"emp:{e['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 

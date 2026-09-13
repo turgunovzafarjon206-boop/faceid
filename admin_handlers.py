@@ -240,7 +240,11 @@ async def list_emps(cb: CallbackQuery):
     if not emps:
         await cb.message.answer("Hozircha xodim yo'q.")
     else:
-        await cb.message.answer("Xodimni tanlang:", reply_markup=kb.employees_kb(emps))
+        linked = sum(1 for e in emps if e["telegram_id"])
+        unlinked = len(emps) - linked
+        await cb.message.answer(
+            f"👥 Jami {len(emps)} ta xodim\n🟢 Ulangan: {linked} | 🔴 Ulanmagan: {unlinked}\n\n"
+            "Xodimni tanlang:", reply_markup=kb.employees_kb(emps))
     await cb.answer()
 
 
@@ -285,7 +289,7 @@ async def deactivate(cb: CallbackQuery):
 async def emp_report(cb: CallbackQuery):
     emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
     first, last = _month_range()
-    await cb.message.answer(await reports.period_text(emp, first, last, "Oylik hisobot"))
+    await cb.message.answer(await reports.period_text(emp, first, last, "Oylik hisobot", for_admin=True))
     await cb.answer()
 
 
@@ -388,6 +392,19 @@ async def rep_period_got(msg: Message, state: FSMContext):
         d1, d2 = d2, d1
     await msg.answer("⏳ Excel tayyorlanmoqda...")
     await _send_excel(msg, d1, d2, "Davr hisoboti")
+
+
+@router.callback_query(F.data == "a:finetoggle")
+async def fine_toggle(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    cur = await db.get_setting("show_fine")
+    new = "0" if cur == "1" else "1"
+    await db.set_setting("show_fine", new)
+    state = "YOQILDI ✅ (xodim jarimani ko'radi)" if new == "1" else "O'CHIRILDI ❌ (xodim jarimani ko'rmaydi)"
+    await cb.answer("Yangilandi")
+    await cb.message.answer(f"💰 Jarima xodimga ko'rinishi: {state}\n"
+                            "(Admin har doim jarimani ko'radi.)")
 
 
 @router.callback_query(F.data == "a:today")

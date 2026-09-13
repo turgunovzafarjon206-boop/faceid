@@ -41,6 +41,7 @@ async def dr_add(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
     await state.set_state(NewReq.title)
+    await state.update_data(_dr={})
     await cb.message.answer("Talab nomini yozing (masalan: Pasport nusxasi):")
     await cb.answer()
 
@@ -48,21 +49,24 @@ async def dr_add(cb: CallbackQuery, state: FSMContext):
 @router.message(NewReq.title, F.text)
 async def dr_title(msg: Message, state: FSMContext):
     await state.update_data(title=msg.text.strip())
-    await state.set_state(NewReq.dtype)
+    await state.set_state(None)  # keyingi qadamlar callback (holatga bog'liq emas)
     await msg.answer("Qanday ma'lumot talab qilinadi?", reply_markup=kb.dtype_kb())
 
 
-@router.callback_query(NewReq.dtype, F.data.startswith("drtype:"))
+@router.callback_query(F.data.startswith("drtype:"))
 async def dr_dtype(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
     await state.update_data(dtype=cb.data.split(":")[1])
-    await state.set_state(NewReq.target)
     deps = await db.list_departments()
     await cb.message.answer("Kimlardan talab qilinsin?", reply_markup=kb.dr_target_kb(deps))
     await cb.answer()
 
 
-@router.callback_query(NewReq.target, F.data.startswith("drtar:"))
+@router.callback_query(F.data.startswith("drtar:"))
 async def dr_target(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
     parts = cb.data.split(":")
     dep_id = None if parts[1] == "all" else int(parts[2])
     await state.update_data(dep_id=dep_id)
@@ -83,20 +87,25 @@ async def dr_deadline(msg: Message, state: FSMContext):
             await msg.answer("❌ Noto'g'ri format. YYYY-MM-DD yoki - yuboring.")
             return
     await state.update_data(deadline=deadline)
-    await state.set_state(NewReq.mandatory)
+    await state.set_state(None)
     await msg.answer("Bu talab majburiymi yoki ixtiyoriy?", reply_markup=kb.dr_mandatory_kb())
 
 
-@router.callback_query(NewReq.mandatory, F.data.startswith("drman:"))
+@router.callback_query(F.data.startswith("drman:"))
 async def dr_mandatory(cb: CallbackQuery, state: FSMContext):
-    mandatory = cb.data.split(":")[1] == "1"
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
     data = await state.get_data()
+    if "title" not in data or "dtype" not in data:
+        await cb.answer("Sessiya tugagan, qaytadan boshlang", show_alert=True)
+        await state.clear()
+        return
+    mandatory = cb.data.split(":")[1] == "1"
     req_id = await db.add_data_request(
-        data["title"], data["dtype"], data["dep_id"], data["deadline"], mandatory)
+        data["title"], data["dtype"], data.get("dep_id"), data.get("deadline"), mandatory)
     await state.clear()
 
     req = await db.get_data_request(req_id)
-    # tegishli xodimlarga xabar
     eligible = await db.eligible_linked_for_request(req)
     dl = f"\n📅 Muddat: {req['deadline']}" if req["deadline"] else ""
     mm = "🔴 Majburiy" if mandatory else "🟢 Ixtiyoriy"

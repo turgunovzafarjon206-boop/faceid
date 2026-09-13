@@ -22,6 +22,75 @@ def _parse_hm(s: str) -> dt.time:
     return dt.time(int(hh), int(mm))
 
 
+UZ_MONTHS = ["", "yanvar", "fevral", "mart", "aprel", "may", "iyun",
+             "iyul", "avgust", "sentyabr", "oktyabr", "noyabr", "dekabr"]
+
+
+def uz_date(day_str):
+    """'2026-09-04' -> '4-sentyabr 2026'"""
+    y, m, d = day_str.split("-")
+    return f"{int(d)}-{UZ_MONTHS[int(m)]} {y}"
+
+
+def fmt_sum(x):
+    return f"{int(x):,}".replace(",", " ")
+
+
+def fine_rate(streak):
+    """Ketma-ket kech qolish tartibiga qarab 1 daqiqa jarimasi (so'm)."""
+    if streak <= 3:
+        return 1000
+    if streak <= 6:
+        return 3000
+    return 5000
+
+
+async def _late_series(emp, day_from, day_to):
+    """Kunlar bo'yicha (day, worked_min, late_min, r) ketma-ketligi (tartibda)."""
+    rows = await db.events_between(emp["id"], day_from, day_to)
+    by_day = {}
+    for day, etype, ts in rows:
+        by_day.setdefault(day, []).append((etype, ts))
+    series = []
+    for day in sorted(by_day):
+        r = compute_day(emp, by_day[day])
+        if not r:
+            continue
+        late = r["kechikish_min"] if emp["count_late"] else 0
+        series.append((day, r, late))
+    return series
+
+
+def _apply_fines(series):
+    """Ketma-ket kech qolishga qarab jarima. Qaytaradi: {day: (fine, streak, rate)}, total."""
+    streak = 0
+    total = 0
+    info = {}
+    for day, r, late in series:
+        if late > 0:
+            streak += 1
+            rate = fine_rate(streak)
+            fine = late * rate
+        else:
+            streak = 0
+            rate = 0
+            fine = 0
+        info[day] = (fine, streak, rate)
+        total += fine
+    return info, total
+
+
+def _month_bounds(day_str):
+    y, m, _ = day_str.split("-")
+    import calendar
+    last = calendar.monthrange(int(y), int(m))[1]
+    return f"{y}-{m}-01", f"{y}-{m}-{last:02d}"
+
+
+async def show_fine_enabled():
+    return (await db.get_setting("show_fine")) == "1"
+
+
 def compute_day(emp, events):
     """
     events: [(event_type, ts_iso), ...] shu kun uchun.
@@ -59,54 +128,58 @@ def compute_day(emp, events):
     }
 
 
-async def daily_text(emp, day: str) -> str:
+async def daily_text(emp, day: str, for_admin=False) -> str:
     events = await db.events_for_day(emp["id"], day)
     r = compute_day(emp, events)
-    head = f"👤 {emp['first_name']} {emp['last_name']}\n📅 Sana: {day}\n"
+    head = f"👤 {emp['first_name']} {emp['last_name']}\n📅 Sana: {uz_date(day)}\n"
     if not r:
         return head + "\nBu kuni hech qanday qayd yo'q."
     kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "—"
     chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "— (hali chiqmagan)"
-    txt = head + (
-        f"\n🟢 Kirish: {kirish}"
-        f"\n🔴 Chiqish: {chiqish}"
-    )
+    txt = head + (f"\n🟢 Kirish: {kirish}\n🔴 Chiqish: {chiqish}")
     if emp["count_late"]:
         if r["kechikish_min"] > 0:
-            txt += f"\n⏰ Kech qolish: {fmt_duration(r['kechikish_min'])}"
+            txt += f"\n⏰ Kech qolish: {r['kechikish_min']} daqiqa"
         else:
             txt += "\n⏰ Kech qolish: yo'q ✅"
     txt += f"\n⏱ Ishlangan vaqt: {fmt_duration(r['ishlangan_min'])}"
+
+    # Jarima (oy boshidan shu kungacha ketma-ketlik bo'yicha)
+    if emp["count_late"] and r["kechikish_min"] > 0:
+        show = for_admin or await show_fine_enabled()
+        if show:
+            mf, mt = _month_bounds(day)
+            series = await _late_series(emp, mf, day)
+            info, _ = _apply_fines(series)
+            fine = info.get(day, (0, 0, 0))[0]
+            if fine:
+                txt += f"\n💰 Jarima: {fmt_sum(fine)} so'm"
     return txt
 
 
-async def period_text(emp, day_from: str, day_to: str, title: str) -> str:
-    rows = await db.events_between(emp["id"], day_from, day_to)
-    by_day = {}
-    for day, etype, ts in rows:
-        by_day.setdefault(day, []).append((etype, ts))
+async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=False) -> str:
+    series = await _late_series(emp, day_from, day_to)
+    info, fine_total = _apply_fines(series)
 
     worked_total = 0
     late_total = 0
     late_days = 0
     worked_days = 0
     lines = []
-    for day in sorted(by_day):
-        r = compute_day(emp, by_day[day])
-        if not r:
-            continue
+    for day, r, late in series:
         worked_days += 1
         worked_total += r["ishlangan_min"]
-        late_total += r["kechikish_min"]
-        if r["kech_qoldi"]:
+        late_total += late
+        if late > 0:
             late_days += 1
         kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "—"
         chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "—"
-        mark = f" ⏰+{r['kechikish_min']}daq" if r["kech_qoldi"] else ""
-        lines.append(f"• {day}: {kirish}–{chiqish} | {fmt_duration(r['ishlangan_min'])}{mark}")
+        late_part = f" (Kech qolish {late} daqiqa)" if late > 0 else ""
+        lines.append(f"{uz_date(day)} {kirish}-{chiqish} | "
+                     f"{fmt_duration(r['ishlangan_min'])}{late_part}")
 
     head = (f"👤 {emp['first_name']} {emp['last_name']}\n"
-            f"🗓 {title} ({day_from} … {day_to})\n\n")
+            f"🗓 {title} ({uz_date(day_from)} … {uz_date(day_to)})\n\n")
     summary = (
         f"📊 Umumiy natija:\n"
         f"✅ Ishlagan kun: {worked_days} kun\n"
@@ -115,6 +188,9 @@ async def period_text(emp, day_from: str, day_to: str, title: str) -> str:
     if emp["count_late"]:
         summary += (f"⏰ Kech qolish vaqti: {fmt_duration(late_total)}\n"
                     f"🔴 Kech qolgan kun: {late_days} kun\n")
+        show = for_admin or await show_fine_enabled()
+        if show and fine_total:
+            summary += f"💰 Jami jarima: {fmt_sum(fine_total)} so'm\n"
     detail = "\n".join(lines) if lines else "Qayd yo'q."
     return head + summary + "\n" + detail
 
@@ -150,44 +226,35 @@ async def build_period_excel(employees, day_from, day_to, title):
     ws = wb.active
     ws.title = "Umumiy"
     ws.append(["Xodim", "Telefon", "Ishlagan kun", "Ishlangan vaqt",
-               "Soat (jami)", "Kech qolgan kun", "Kech qolish (daqiqa)"])
+               "Soat (jami)", "Kech qolgan kun", "Kech qolish (daqiqa)", "Jarima (so'm)"])
 
     # 2-varaq: Kunlik
     ws2 = wb.create_sheet("Kunlik")
     ws2.append(["Xodim", "Sana", "Kirish", "Chiqish", "Ishlangan vaqt", "Kechikish (daqiqa)"])
 
     for emp in employees:
-        rows = await db.events_between(emp["id"], day_from, day_to)
-        by_day = {}
-        for day, etype, ts in rows:
-            by_day.setdefault(day, []).append((etype, ts))
-
+        series = await _late_series(emp, day_from, day_to)
+        info, fine_total = _apply_fines(series)
         worked_total = late_total = late_days = worked_days = 0
-        for day in sorted(by_day):
-            r = compute_day(emp, by_day[day])
-            if not r:
-                continue
+        for day, r, late in series:
             worked_days += 1
             worked_total += r["ishlangan_min"]
-            late_total += r["kechikish_min"]
-            if r["kech_qoldi"]:
+            late_total += late
+            if late > 0:
                 late_days += 1
             ws2.append([
-                f"{emp['first_name']} {emp['last_name']}", day,
+                f"{emp['first_name']} {emp['last_name']}", uz_date(day),
                 r["kirish"].strftime("%H:%M") if r["kirish"] else "",
                 r["chiqish"].strftime("%H:%M") if r["chiqish"] else "",
-                fmt_duration(r["ishlangan_min"]),
-                r["kechikish_min"] if emp["count_late"] else 0,
+                fmt_duration(r["ishlangan_min"]), late,
             ])
-
         ws.append([
             f"{emp['first_name']} {emp['last_name']}", emp["phone"], worked_days,
             fmt_duration(worked_total), round(worked_total / 60, 1),
-            late_days if emp["count_late"] else 0,
-            late_total if emp["count_late"] else 0,
+            late_days, late_total, fine_total if emp["count_late"] else 0,
         ])
 
-    _style_header(ws, 7)
+    _style_header(ws, 8)
     _style_header(ws2, 6)
     _autosize(ws)
     _autosize(ws2)
@@ -228,6 +295,13 @@ async def notify_text(emp, etype, ts):
     late = ""
     if etype == "in" and emp["count_late"] and late_min > 0:
         late = f"\n⏰ Siz {fmt_duration(late_min)} kech qoldingiz."
+        if await show_fine_enabled():
+            mf, _ = _month_bounds(day)
+            series = await _late_series(emp, mf, day)
+            info, _ = _apply_fines(series)
+            fine = info.get(day, (0, 0, 0))[0]
+            if fine:
+                late += f"\n💰 Jarima: {fmt_sum(fine)} so'm"
 
     if etype == "in":
         tpl = await db.get_template("tpl_in", db.DEFAULT_TPL_IN)

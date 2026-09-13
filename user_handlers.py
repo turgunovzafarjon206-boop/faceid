@@ -184,13 +184,13 @@ async def save_user_edit(msg: Message, state: FSMContext):
     await msg.answer("✅ Saqlandi.", reply_markup=kb.user_menu())
 
 
-# ==================== ✉️ Adminga xabar (HR) ====================
-@router.message(F.text == "✉️ Adminga xabar")
+# ==================== ✉️ HR bo'limiga xabar ====================
+@router.message(F.text == "✉️ HR bo'limiga xabar")
 async def hr_start(msg: Message, state: FSMContext):
     if not await _need_emp(msg):
         return
     await state.set_state(UserState.hr_wait)
-    await msg.answer("Adminga yubormoqchi bo'lgan xabaringizni yozing "
+    await msg.answer("HR bo'limiga yubormoqchi bo'lgan xabaringizni yozing "
                      "(matn, rasm yoki fayl bo'lishi mumkin):")
 
 
@@ -201,7 +201,7 @@ async def hr_send(msg: Message, state: FSMContext):
     import admin_handlers
     ids = admin_handlers.all_admin_ids()
     who = f"{emp['first_name']} {emp['last_name']} ({emp['phone']})"
-    header = f"📩 HR xabar\n{who}:"
+    header = f"📩 HR bo'limiga xabar\n{who}:"
     btn = kb.hr_reply_kb(msg.from_user.id)
     sent = 0
     for aid in ids:
@@ -220,7 +220,7 @@ async def hr_send(msg: Message, state: FSMContext):
         except Exception:
             pass
     if sent:
-        await msg.answer("✅ Xabaringiz adminga yuborildi. Tez orada javob beriladi.",
+        await msg.answer("✅ Xabaringiz HR bo'limiga yuborildi. Tez orada javob beriladi.",
                          reply_markup=kb.user_menu())
     else:
         await msg.answer("❌ Hozircha admin mavjud emas.", reply_markup=kb.user_menu())
