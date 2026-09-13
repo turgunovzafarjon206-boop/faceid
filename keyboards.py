@@ -47,7 +47,8 @@ def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📷 FaceID boshqarish")],
-            [KeyboardButton(text="👥 Ma'lumotlar"), KeyboardButton(text="✉️ Xabar")],
+            [KeyboardButton(text="👥 Ma'lumotlar"), KeyboardButton(text="🏢 Bo'limlar")],
+            [KeyboardButton(text="✉️ Xabar"), KeyboardButton(text="🔔 Eslatma")],
             [KeyboardButton(text="🔙 Oddiy menyu")],
         ],
         resize_keyboard=True,
@@ -57,9 +58,61 @@ def admin_menu():
 def admin_faceid_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚙️ Qurilma sozlamalari", callback_data="a:fset")],
+        [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
         [InlineKeyboardButton(text="📋 Bugungi holat", callback_data="a:today")],
     ])
+
+
+def templates_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Kirish matni", callback_data="tpl:in")],
+        [InlineKeyboardButton(text="🔴 Chiqish matni", callback_data="tpl:out")],
+        [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data="tpl:reset")],
+    ])
+
+
+def dep_manage_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Bo'lim qo'shish", callback_data="dep:add")],
+        [InlineKeyboardButton(text="📋 Bo'limlar ro'yxati", callback_data="dep:list")],
+    ])
+
+
+def departments_kb(deps, prefix="dep"):
+    kb = [[InlineKeyboardButton(text=f"🏢 {d['name']} ({d['count']})",
+                                callback_data=f"{prefix}:{d['id']}")] for d in deps]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def dep_actions_kb(dep_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Xodimlari", callback_data=f"depmem:{dep_id}")],
+        [InlineKeyboardButton(text="🗑 Bo'limni o'chirish", callback_data=f"depdel:{dep_id}")],
+    ])
+
+
+def reminder_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 To'ldirmaganlar ro'yxati", callback_data="rem:list")],
+        [InlineKeyboardButton(text="📢 Guruhga eslatma yuborish", callback_data="rem:send")],
+    ])
+
+
+def recipients_kb(deps, prefix):
+    kb = [[InlineKeyboardButton(text="📢 Hammaga", callback_data=f"{prefix}:all")]]
+    for d in deps:
+        kb.append([InlineKeyboardButton(text=f"🏢 {d['name']} ({d['count']})",
+                                        callback_data=f"{prefix}:d:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def emp_department_kb(deps, emp_id):
+    kb = [[InlineKeyboardButton(text="— Bo'limsiz —", callback_data=f"setdep:{emp_id}:0")]]
+    for d in deps:
+        kb.append([InlineKeyboardButton(text=f"🏢 {d['name']}",
+                                        callback_data=f"setdep:{emp_id}:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def admin_data_kb():
@@ -127,6 +180,7 @@ def employee_manage_kb(emp):
         [InlineKeyboardButton(text="🆔 FaceID ID", callback_data=f"edit:faceid:{emp['id']}")],
         [InlineKeyboardButton(text="🕐 Ish grafigi", callback_data=f"edit:schedule:{emp['id']}")],
         [InlineKeyboardButton(text=late, callback_data=f"togglelate:{emp['id']}")],
+        [InlineKeyboardButton(text="🏢 Bo'lim tayinlash", callback_data=f"empdep:{emp['id']}")],
         [InlineKeyboardButton(text="📊 Hisobot (bu oy)", callback_data=f"report:{emp['id']}")],
         [InlineKeyboardButton(text="🗑 O'chirish (nofaol)", callback_data=f"deactivate:{emp['id']}")],
     ])

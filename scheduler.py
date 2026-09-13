@@ -47,24 +47,7 @@ async def faceid_poller(bot):
 async def _notify(bot, emp, etype, ts):
     if not emp["telegram_id"]:
         return
-    day = ts.strftime("%Y-%m-%d")
-    tstr = ts.strftime("%H:%M")
-    if etype == "in":
-        text = f"🟢 Kirish qayd etildi\n🕐 Vaqt: {tstr}"
-        if emp["count_late"]:
-            events = await db.events_for_day(emp["id"], day)
-            r = reports.compute_day(emp, events)
-            if r and r["kech_qoldi"]:
-                text += f"\n⏰ Siz {reports.fmt_duration(r['kechikish_min'])} kech qoldingiz."
-            else:
-                text += "\n✅ O'z vaqtida."
-        text += "\n\nXush kelibsiz! 😊"
-    else:
-        events = await db.events_for_day(emp["id"], day)
-        r = reports.compute_day(emp, events)
-        worked = reports.fmt_duration(r["ishlangan_min"]) if r else "—"
-        text = (f"🔴 Chiqish qayd etildi\n🕐 Vaqt: {tstr}\n"
-                f"⏱ Bugun ishlangan vaqt: {worked}\n\nYaxshi boring! 👋")
+    text = await reports.notify_text(emp, etype, ts)
     try:
         await bot.send_message(emp["telegram_id"], text)
     except Exception as e:

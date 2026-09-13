@@ -198,3 +198,48 @@ async def build_period_excel(employees, day_from, day_to, title):
     path = f"/tmp/{safe}_{day_from}_{day_to}.xlsx"
     wb.save(path)
     return path
+
+
+# ==================== BILDIRISHNOMA MATNI (tahrirlanadigan) ====================
+import string as _string
+
+
+class _SafeDict(dict):
+    def __missing__(self, key):
+        return ""
+
+
+def safe_format(template, **kwargs):
+    """Shablonni to'ldiradi; noma'lum {joy} bo'lsa xato bermaydi, bo'sh qoldiradi."""
+    try:
+        return _string.Formatter().vformat(template, (), _SafeDict(**kwargs))
+    except Exception:
+        return template
+
+
+async def notify_text(emp, etype, ts):
+    """Xodimga yuboriladigan kirish/chiqish xabari (admin tahrirlagan shablon bilan)."""
+    day = ts.strftime("%Y-%m-%d")
+    events = await db.events_for_day(emp["id"], day)
+    r = compute_day(emp, events) or {}
+    worked = fmt_duration(r.get("ishlangan_min", 0))
+    late_min = r.get("kechikish_min", 0)
+
+    late = ""
+    if etype == "in" and emp["count_late"] and late_min > 0:
+        late = f"\n⏰ Siz {fmt_duration(late_min)} kech qoldingiz."
+
+    if etype == "in":
+        tpl = await db.get_template("tpl_in", db.DEFAULT_TPL_IN)
+    else:
+        tpl = await db.get_template("tpl_out", db.DEFAULT_TPL_OUT)
+
+    return safe_format(
+        tpl,
+        name=f"{emp['first_name']} {emp['last_name']}",
+        time=ts.strftime("%H:%M"),
+        date=ts.strftime("%d.%m.%Y"),
+        worked=worked,
+        late=late,
+        late_min=late_min,
+    )

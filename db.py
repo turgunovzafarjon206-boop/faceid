@@ -56,8 +56,24 @@ async def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS departments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS unknown_names (
+                name TEXT PRIMARY KEY,
+                last_seen TEXT,
+                cnt INTEGER DEFAULT 1
+            );
             """
         )
+        # Migratsiya: employees jadvaliga department_id ustunini qo'shamiz (bo'lmasa)
+        cur = await db.execute("PRAGMA table_info(employees)")
+        cols = [r[1] for r in await cur.fetchall()]
+        if "department_id" not in cols:
+            await db.execute("ALTER TABLE employees ADD COLUMN department_id INTEGER")
         await db.commit()
 
 
@@ -89,7 +105,7 @@ async def _row_to_emp(row):
         return None
     keys = ["id", "first_name", "last_name", "phone", "faceid_user_id",
             "telegram_id", "work_start", "work_end", "grace_minutes",
-            "count_late", "active", "created_at"]
+            "count_late", "active", "created_at", "department_id"]
     return dict(zip(keys, row))
 
 
@@ -265,3 +281,112 @@ async def count_employees():
         cur = await db.execute("SELECT COUNT(*) FROM employees")
         r = await cur.fetchone()
         return r[0] if r else 0
+
+
+# ---------------- Bo'limlar (departments) ----------------
+async def add_department(name):
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            cur = await db.execute("INSERT INTO departments(name) VALUES(?)", (name.strip(),))
+            await db.commit()
+            return cur.lastrowid
+        except aiosqlite.IntegrityError:
+            return None
+
+
+async def list_departments():
+    """Har bir bo'lim va undagi xodimlar sonini qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT d.id, d.name, COUNT(e.id)
+               FROM departments d
+               LEFT JOIN employees e ON e.department_id=d.id AND e.active=1
+               GROUP BY d.id ORDER BY d.name""")
+        return [{"id": r[0], "name": r[1], "count": r[2]} for r in await cur.fetchall()]
+
+
+async def get_department(dep_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id,name FROM departments WHERE id=?", (dep_id,))
+        r = await cur.fetchone()
+        return {"id": r[0], "name": r[1]} if r else None
+
+
+async def delete_department(dep_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE employees SET department_id=NULL WHERE department_id=?", (dep_id,))
+        await db.execute("DELETE FROM departments WHERE id=?", (dep_id,))
+        await db.commit()
+
+
+async def department_members(dep_id, active_only=True):
+    async with aiosqlite.connect(DB_PATH) as db:
+        q = "SELECT * FROM employees WHERE department_id=?"
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY last_name, first_name"
+        cur = await db.execute(q, (dep_id,))
+        return [await _row_to_emp(r) for r in await cur.fetchall()]
+
+
+async def set_employee_department(emp_id, dep_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE employees SET department_id=? WHERE id=?", (dep_id, emp_id))
+        await db.commit()
+
+
+# ---------------- Ro'yxatdan o'tmaganlar ----------------
+async def unlinked_employees(dep_id=None):
+    """Bazada bor, lekin botga /start bosmagan (telegram_id yo'q) xodimlar."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        q = "SELECT * FROM employees WHERE active=1 AND (telegram_id IS NULL)"
+        args = ()
+        if dep_id:
+            q += " AND department_id=?"
+            args = (dep_id,)
+        q += " ORDER BY last_name, first_name"
+        cur = await db.execute(q, args)
+        return [await _row_to_emp(r) for r in await cur.fetchall()]
+
+
+async def linked_employees(dep_id=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        q = "SELECT * FROM employees WHERE active=1 AND telegram_id IS NOT NULL"
+        args = ()
+        if dep_id:
+            q += " AND department_id=?"
+            args = (dep_id,)
+        cur = await db.execute(q, args)
+        return [await _row_to_emp(r) for r in await cur.fetchall()]
+
+
+async def record_unknown(name):
+    now = now_local().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO unknown_names(name,last_seen,cnt) VALUES(?,?,1) "
+            "ON CONFLICT(name) DO UPDATE SET last_seen=excluded.last_seen, cnt=cnt+1",
+            (name, now))
+        await db.commit()
+
+
+async def list_unknown():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT name, cnt, last_seen FROM unknown_names ORDER BY cnt DESC")
+        return [{"name": r[0], "cnt": r[1], "last_seen": r[2]} for r in await cur.fetchall()]
+
+
+async def clear_unknown():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM unknown_names")
+        await db.commit()
+
+
+# ---------------- Xabar shablonlari (templates) ----------------
+DEFAULT_TPL_IN = "🟢 Kirish qayd etildi\n🕐 Vaqt: {time}{late}\n\nXush kelibsiz! 😊"
+DEFAULT_TPL_OUT = "🔴 Chiqish qayd etildi\n🕐 Vaqt: {time}\n⏱ Ishlangan vaqt: {worked}\n\nYaxshi boring! 👋"
+
+
+async def get_template(key, default=""):
+    v = await get_setting(key)
+    return v if v else default

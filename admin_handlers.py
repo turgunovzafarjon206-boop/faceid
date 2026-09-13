@@ -41,6 +41,18 @@ class AdminReport(StatesGroup):
 
 
 class Broadcast(StatesGroup):
+    content = State()
+
+
+class DeptState(StatesGroup):
+    name = State()
+
+
+class TplState(StatesGroup):
+    value = State()
+
+
+class ReminderState(StatesGroup):
     text = State()
 
 
@@ -79,9 +91,26 @@ async def m_data(msg: Message):
 
 
 @router.message(F.text == "✉️ Xabar")
-async def m_message(msg: Message):
+async def m_message(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.set_state(Broadcast.content)
+    await msg.answer("✉️ Yubormoqchi bo'lgan xabaringizni yuboring — "
+                     "matn, rasm (izoh bilan) yoki video bo'lishi mumkin.")
+
+
+@router.message(F.text == "🏢 Bo'limlar")
+async def m_departments(msg: Message):
     if is_admin(msg.from_user.id):
-        await msg.answer("✉️ Xabar bo'limi:", reply_markup=kb.admin_msg_kb())
+        await msg.answer("🏢 Bo'limlar boshqaruvi:", reply_markup=kb.dep_manage_kb())
+
+
+@router.message(F.text == "🔔 Eslatma")
+async def m_reminder(msg: Message):
+    if is_admin(msg.from_user.id):
+        await msg.answer(
+            "🔔 Ma'lumot to'ldirmaganlar (botga /start bosmagan xodimlar) uchun eslatma.",
+            reply_markup=kb.reminder_kb())
 
 
 # ==================== Ma'lumotlar: Xodim qo'shish ====================
@@ -431,45 +460,261 @@ async def _test_connection(cb: CallbackQuery):
         await cb.message.answer(f"❌ Ulanishda xatolik:\n{e}\n\nURL, token yoki rejimni tekshiring.")
 
 
-# ==================== Xabar (broadcast) ====================
-@router.callback_query(F.data == "a:bcast")
-async def bcast_start(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer()
-    await state.set_state(Broadcast.text)
-    await cb.message.answer("📢 Barcha xodimlarga yuboriladigan xabar matnini yuboring:")
-    await cb.answer()
+# ==================== Xabar (broadcast: matn/rasm/video + qabul qiluvchi) ====================
+@router.message(Broadcast.content)
+async def bcast_got_content(msg: Message, state: FSMContext):
+    kind = None
+    payload = {}
+    if msg.photo:
+        kind = "photo"
+        payload = {"file_id": msg.photo[-1].file_id, "caption": msg.caption or ""}
+    elif msg.video:
+        kind = "video"
+        payload = {"file_id": msg.video.file_id, "caption": msg.caption or ""}
+    elif msg.text:
+        kind = "text"
+        payload = {"text": msg.text}
+    else:
+        await msg.answer("Faqat matn, rasm yoki video yuboring.")
+        return
+    await state.update_data(kind=kind, payload=payload)
+    deps = await db.list_departments()
+    await msg.answer("Kimga yuborilsin?", reply_markup=kb.recipients_kb(deps, "bcto"))
 
 
-@router.message(Broadcast.text, F.text)
-async def bcast_preview(msg: Message, state: FSMContext):
-    await state.update_data(text=msg.text)
-    emps = [e for e in await db.list_employees() if e["telegram_id"]]
-    await msg.answer(
-        f"Xabar {len(emps)} ta xodimga yuboriladi:\n\n———\n{msg.text}\n———\n\nTasdiqlaysizmi?",
-        reply_markup=kb.bcast_confirm_kb())
+async def _recipients(target):
+    """target: 'all' yoki ('dep', id)"""
+    if target == "all":
+        return await db.linked_employees()
+    return await db.linked_employees(dep_id=target[1])
 
 
-@router.callback_query(F.data == "bcast:no")
-async def bcast_cancel(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cb.message.answer("❌ Bekor qilindi.", reply_markup=kb.admin_menu())
-    await cb.answer()
-
-
-@router.callback_query(F.data == "bcast:yes")
+@router.callback_query(F.data.startswith("bcto:"))
 async def bcast_send(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    text = data.get("text", "")
+    kind = data.get("kind")
+    payload = data.get("payload", {})
+    if not kind:
+        await cb.answer("Avval xabar yuboring", show_alert=True)
+        return
+
+    parts = cb.data.split(":")
+    if parts[1] == "all":
+        recips = await _recipients("all")
+        target_name = "hammaga"
+    else:  # bcto:d:<id>
+        dep_id = int(parts[2])
+        recips = await _recipients(("dep", dep_id))
+        dep = await db.get_department(dep_id)
+        target_name = dep["name"] if dep else "bo'lim"
+
     await state.clear()
     await cb.answer("Yuborilmoqda...")
-    emps = [e for e in await db.list_employees() if e["telegram_id"]]
     ok = fail = 0
-    for emp in emps:
+    for emp in recips:
         try:
-            await cb.bot.send_message(emp["telegram_id"], f"📢 E'lon:\n\n{text}")
+            cid = emp["telegram_id"]
+            if kind == "text":
+                await cb.bot.send_message(cid, payload["text"])
+            elif kind == "photo":
+                await cb.bot.send_photo(cid, payload["file_id"], caption=payload["caption"] or None)
+            elif kind == "video":
+                await cb.bot.send_video(cid, payload["file_id"], caption=payload["caption"] or None)
             ok += 1
         except Exception:
             fail += 1
-    await cb.message.answer(f"✅ Yuborildi: {ok} ta\n❌ Yuborilmadi: {fail} ta",
+    await cb.message.answer(f"✅ Yuborildi ({target_name}): {ok} ta\n❌ Yuborilmadi: {fail} ta",
                             reply_markup=kb.admin_menu())
+
+
+# ==================== Bo'limlar (departments) ====================
+@router.callback_query(F.data == "dep:add")
+async def dep_add(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(DeptState.name)
+    await cb.message.answer("Yangi bo'lim nomini yozing (masalan: Sotuv bo'limi):")
+    await cb.answer()
+
+
+@router.message(DeptState.name, F.text)
+async def dep_add_save(msg: Message, state: FSMContext):
+    dep_id = await db.add_department(msg.text.strip())
+    await state.clear()
+    if dep_id:
+        await msg.answer(f"✅ Bo'lim qo'shildi: {msg.text.strip()}", reply_markup=kb.dep_manage_kb())
+    else:
+        await msg.answer("❌ Bunday bo'lim allaqachon bor.", reply_markup=kb.dep_manage_kb())
+
+
+@router.callback_query(F.data == "dep:list")
+async def dep_list(cb: CallbackQuery):
+    deps = await db.list_departments()
+    if not deps:
+        await cb.message.answer("Hozircha bo'lim yo'q.")
+    else:
+        total = sum(d["count"] for d in deps)
+        await cb.message.answer(f"🏢 Bo'limlar (jami xodim: {total}). Tanlang:",
+                                reply_markup=kb.departments_kb(deps, "depshow"))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("depshow:"))
+async def dep_show(cb: CallbackQuery):
+    dep_id = int(cb.data.split(":")[1])
+    dep = await db.get_department(dep_id)
+    members = await db.department_members(dep_id)
+    lines = [f"🏢 {dep['name']} — {len(members)} ta xodim\n"]
+    for m in members:
+        link = "✅" if m["telegram_id"] else "⛔"
+        lines.append(f"{link} {m['first_name']} {m['last_name']} ({m['phone']})")
+    await cb.message.answer("\n".join(lines), reply_markup=kb.dep_actions_kb(dep_id))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("depmem:"))
+async def dep_members(cb: CallbackQuery):
+    await dep_show(cb)
+
+
+@router.callback_query(F.data.startswith("depdel:"))
+async def dep_delete(cb: CallbackQuery):
+    dep_id = int(cb.data.split(":")[1])
+    await db.delete_department(dep_id)
+    await cb.answer("O'chirildi")
+    await cb.message.answer("🗑 Bo'lim o'chirildi (xodimlar bo'limsiz qoldi).",
+                            reply_markup=kb.dep_manage_kb())
+
+
+# Xodimga bo'lim tayinlash (xodim boshqarish oynasidan)
+@router.callback_query(F.data.startswith("empdep:"))
+async def emp_dep_choose(cb: CallbackQuery):
+    emp_id = int(cb.data.split(":")[1])
+    deps = await db.list_departments()
+    if not deps:
+        await cb.answer("Avval bo'lim qo'shing", show_alert=True)
+        return
+    await cb.message.answer("Bo'limni tanlang:", reply_markup=kb.emp_department_kb(deps, emp_id))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("setdep:"))
+async def emp_dep_set(cb: CallbackQuery):
+    _, emp_id, dep_id = cb.data.split(":")
+    dep_id = int(dep_id)
+    await db.set_employee_department(int(emp_id), dep_id if dep_id else None)
+    await cb.answer("Saqlandi ✅")
+    await cb.message.answer("🏢 Bo'lim yangilandi.")
+
+
+# ==================== Bildirishnoma matnlari (templates) ====================
+@router.callback_query(F.data == "a:tpl")
+async def tpl_menu(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    tin = await db.get_template("tpl_in", db.DEFAULT_TPL_IN)
+    tout = await db.get_template("tpl_out", db.DEFAULT_TPL_OUT)
+    await cb.message.answer(
+        "📝 Bildirishnoma matnlari.\n\n"
+        "Ishlatsa bo'ladigan belgilar:\n"
+        "{name} — ism, {time} — vaqt, {date} — sana,\n"
+        "{worked} — ishlangan vaqt, {late} — kechikish jumlasi, {late_min} — kechikish daqiqasi\n\n"
+        f"🟢 Hozirgi KIRISH matni:\n———\n{tin}\n———\n\n"
+        f"🔴 Hozirgi CHIQISH matni:\n———\n{tout}\n———",
+        reply_markup=kb.templates_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("tpl:"))
+async def tpl_action(cb: CallbackQuery, state: FSMContext):
+    what = cb.data.split(":")[1]
+    if what == "reset":
+        await db.set_setting("tpl_in", db.DEFAULT_TPL_IN)
+        await db.set_setting("tpl_out", db.DEFAULT_TPL_OUT)
+        await cb.answer("Standartga qaytarildi ✅")
+        await cb.message.answer("↩️ Matnlar standart holatga qaytarildi.")
+        return
+    await state.set_state(TplState.value)
+    await state.update_data(which="tpl_in" if what == "in" else "tpl_out")
+    await cb.message.answer("Yangi matnni yuboring (belgilar: {name} {time} {date} {worked} {late}):")
+    await cb.answer()
+
+
+@router.message(TplState.value, F.text)
+async def tpl_save(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    await db.set_setting(data["which"], msg.text)
+    await state.clear()
+    await msg.answer("✅ Matn saqlandi.", reply_markup=kb.admin_menu())
+
+
+# ==================== Eslatma (to'ldirmaganlar) ====================
+@router.callback_query(F.data == "rem:list")
+async def rem_list(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    unlinked = await db.unlinked_employees()
+    unknown = await db.list_unknown()
+    lines = ["📋 Ma'lumot to'ldirmaganlar:\n"]
+    lines.append(f"⛔ Botga ulanmagan xodimlar ({len(unlinked)}):")
+    for e in unlinked[:50]:
+        lines.append(f"  • {e['first_name']} {e['last_name']} ({e['phone']})")
+    if not unlinked:
+        lines.append("  — yo'q —")
+    lines.append(f"\n❓ Guruhda ko'rilgan, lekin bazada yo'q ({len(unknown)}):")
+    for u in unknown[:50]:
+        lines.append(f"  • {u['name']} ({u['cnt']} marta)")
+    if not unknown:
+        lines.append("  — yo'q —")
+    await cb.message.answer("\n".join(lines))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rem:send")
+async def rem_send_choose(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    deps = await db.list_departments()
+    await cb.message.answer("Eslatma kimlar uchun? (ular guruhga eslatib e'lon qilinadi)",
+                            reply_markup=kb.recipients_kb(deps, "remto"))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("remto:"))
+async def rem_send_text(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if parts[1] == "all":
+        await state.update_data(dep_id=None)
+    else:
+        await state.update_data(dep_id=int(parts[2]))
+    await state.set_state(ReminderState.text)
+    await cb.message.answer(
+        "Eslatma matnini yozing (muddat ham qo'shishingiz mumkin, masalan:\n"
+        "«Iltimos, botdan ro'yxatdan o'ting. Muddat: 20.09.2026 gacha»):")
+    await cb.answer()
+
+
+@router.message(ReminderState.text, F.text)
+async def rem_send_do(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    dep_id = data.get("dep_id")
+    await state.clear()
+
+    unlinked = await db.unlinked_employees(dep_id=dep_id)
+    if not unlinked:
+        await msg.answer("Bu guruhda ro'yxatdan o'tmaganlar yo'q. ✅", reply_markup=kb.admin_menu())
+        return
+
+    names = "\n".join(f"• {e['first_name']} {e['last_name']}" for e in unlinked)
+    text = f"🔔 ESLATMA\n\n{msg.text}\n\nQuyidagilar botdan ro'yxatdan o'tishi kerak:\n{names}"
+
+    import userbot
+    ok = await userbot.post_to_group(text)
+    if ok:
+        await msg.answer(f"✅ Eslatma guruhga yuborildi ({len(unlinked)} kishi).",
+                         reply_markup=kb.admin_menu())
+    else:
+        await msg.answer(
+            "❌ Guruhga yuborib bo'lmadi (userbot ishlamayapti yoki guruh hali aniqlanmagan).\n"
+            "Guruhga kamida bitta qurilma xabari kelgach, guruh avtomatik aniqlanadi.\n\n"
+            f"Ro'yxat:\n{names}", reply_markup=kb.admin_menu())
