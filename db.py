@@ -69,13 +69,15 @@ async def add_employee(first_name, last_name, phone, faceid_user_id,
     work_start = work_start or DEFAULT_WORK_START
     work_end = work_end or DEFAULT_WORK_END
     grace = GRACE_MINUTES if grace_minutes is None else grace_minutes
+    # FaceID ID ixtiyoriy (guruh o'qishda ism bo'yicha topiladi)
+    fid = None if faceid_user_id in (None, "", "-") else str(faceid_user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """INSERT INTO employees
                (first_name,last_name,phone,faceid_user_id,work_start,work_end,
                 grace_minutes,count_late,active,created_at)
                VALUES (?,?,?,?,?,?,?,1,1,?)""",
-            (first_name, last_name, phone, str(faceid_user_id), work_start,
+            (first_name, last_name, phone, fid, work_start,
              work_end, grace, now_local().isoformat()),
         )
         await db.commit()
@@ -115,6 +117,32 @@ async def get_employee_by_id(emp_id):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT * FROM employees WHERE id=?", (emp_id,))
         return await _row_to_emp(await cur.fetchone())
+
+
+def _norm_name(s):
+    return " ".join(str(s).lower().split())
+
+
+async def get_employee_by_name(name):
+    """Guruhdagi to'liq ism bo'yicha xodimni topadi (tartib va katta/kichik harfga bardoshli)."""
+    target = _norm_name(name)
+    ttok = set(target.split())
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT * FROM employees WHERE active=1")
+        rows = await cur.fetchall()
+    emps = [await _row_to_emp(r) for r in rows]
+    # 1) aniq moslik (ikkala tartibda ham)
+    for emp in emps:
+        a = _norm_name(f"{emp['first_name']} {emp['last_name']}")
+        b = _norm_name(f"{emp['last_name']} {emp['first_name']}")
+        if target in (a, b):
+            return emp
+    # 2) so'zlar bo'yicha (biri ikkinchisining ichida)
+    for emp in emps:
+        etok = set(_norm_name(f"{emp['first_name']} {emp['last_name']}").split())
+        if ttok and (ttok <= etok or etok <= ttok):
+            return emp
+    return None
 
 
 async def bind_telegram(emp_id, tg_id):

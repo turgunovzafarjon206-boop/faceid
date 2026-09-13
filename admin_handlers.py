@@ -112,7 +112,8 @@ async def add_last(msg: Message, state: FSMContext):
 async def add_phone(msg: Message, state: FSMContext):
     await state.update_data(phone=msg.text.strip())
     await state.set_state(AddEmp.faceid)
-    await msg.answer("FaceID qurilmasidagi foydalanuvchi ID (masalan 5):")
+    await msg.answer("FaceID ID (ixtiyoriy).\nGuruhdan ism bo'yicha topiladi, "
+                     "shuning uchun kerak bo'lmasa - (chiziqcha) yuboring:")
 
 
 @router.message(AddEmp.faceid, F.text)

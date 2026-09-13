@@ -41,6 +41,13 @@ async def main():
     asyncio.create_task(faceid_poller(bot))
     asyncio.create_task(daily_report_loop(bot))
 
+    # Userbot (guruhni o'qish) — sozlangan bo'lsa ishga tushadi
+    try:
+        from userbot import start_userbot
+        await start_userbot(bot)
+    except Exception as e:
+        log.warning("Userbot ishga tushmadi: %s", e)
+
     log.info("Bot ishga tushdi. To'xtatish uchun Ctrl+C.")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
