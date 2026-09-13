@@ -15,6 +15,7 @@ def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📷 FaceID"), KeyboardButton(text="👤 Mening ma'lumotlarim")],
+            [KeyboardButton(text="✉️ Adminga xabar")],
         ],
         resize_keyboard=True,
     )
@@ -59,6 +60,7 @@ def admin_faceid_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚙️ Qurilma sozlamalari", callback_data="a:fset")],
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
+        [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
         [InlineKeyboardButton(text="📋 Bugungi holat", callback_data="a:today")],
     ])
@@ -66,9 +68,24 @@ def admin_faceid_kb():
 
 def templates_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Kirish matni", callback_data="tpl:in")],
-        [InlineKeyboardButton(text="🔴 Chiqish matni", callback_data="tpl:out")],
+        [InlineKeyboardButton(text="🟢 Kirish matni", callback_data="tpl:in"),
+         InlineKeyboardButton(text="🔴 Chiqish matni", callback_data="tpl:out")],
+        [InlineKeyboardButton(text="⚠️ Ogohlantirish matni", callback_data="tpl:warn"),
+         InlineKeyboardButton(text="📊 So'rovnoma matni", callback_data="tpl:survey")],
         [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data="tpl:reset")],
+    ])
+
+
+def add_dep_pick_kb(deps):
+    kb = [[InlineKeyboardButton(text="— Bo'limsiz —", callback_data="adddep:0")]]
+    for d in deps:
+        kb.append([InlineKeyboardButton(text=f"🏢 {d['name']}", callback_data=f"adddep:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def hr_reply_kb(emp_tg_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Javob berish", callback_data=f"hrreply:{emp_tg_id}")],
     ])
 
 

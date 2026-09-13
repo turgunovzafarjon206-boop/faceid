@@ -42,6 +42,11 @@ class AddEmp(StatesGroup):
     phone = State()
     faceid = State()
     schedule = State()
+    department = State()
+
+
+class HRReply(StatesGroup):
+    wait = State()
 
 
 class EditEmp(StatesGroup):
@@ -178,7 +183,6 @@ async def add_faceid(msg: Message, state: FSMContext):
 
 @router.message(AddEmp.schedule, F.text)
 async def add_schedule(msg: Message, state: FSMContext):
-    data = await state.get_data()
     try:
         ws, we = msg.text.strip().split("-")
         dt.datetime.strptime(ws.strip(), "%H:%M")
@@ -186,17 +190,43 @@ async def add_schedule(msg: Message, state: FSMContext):
     except ValueError:
         await msg.answer("❌ Format noto'g'ri. Masalan: 08:00-18:00")
         return
+    await state.update_data(ws=ws.strip(), we=we.strip())
+    deps = await db.list_departments()
+    if not deps:
+        await _create_employee(msg, state, dep_id=None)
+    else:
+        await state.set_state(AddEmp.department)
+        await msg.answer("Bo'limni tanlang:", reply_markup=kb.add_dep_pick_kb(deps))
+
+
+@router.callback_query(AddEmp.department, F.data.startswith("adddep:"))
+async def add_pick_dep(cb: CallbackQuery, state: FSMContext):
+    dep_id = int(cb.data.split(":")[1]) or None
+    await _create_employee(cb.message, state, dep_id=dep_id)
+    await cb.answer()
+
+
+async def _create_employee(target, state: FSMContext, dep_id):
+    data = await state.get_data()
     try:
-        await db.add_employee(data["first"], data["last"], data["phone"],
-                              data["faceid"], work_start=ws.strip(), work_end=we.strip())
+        emp_id = await db.add_employee(
+            data["first"], data["last"], data["phone"], data["faceid"],
+            work_start=data["ws"], work_end=data["we"])
     except Exception as e:
-        await msg.answer(f"❌ Xatolik (telefon yoki FaceID ID takrorlangan bo'lishi mumkin):\n{e}")
+        await target.answer(f"❌ Xatolik (telefon yoki FaceID ID takrorlangan bo'lishi mumkin):\n{e}")
         await state.clear()
         return
+    if dep_id:
+        await db.set_employee_department(emp_id, dep_id)
+    dep_name = ""
+    if dep_id:
+        d = await db.get_department(dep_id)
+        dep_name = f"\n🏢 Bo'lim: {d['name']}" if d else ""
     await state.clear()
-    await msg.answer(
+    await target.answer(
         f"✅ Xodim qo'shildi!\n\n👤 {data['first']} {data['last']}\n"
-        f"📞 {data['phone']}\n🆔 FaceID: {data['faceid']}\n🕐 {ws.strip()}-{we.strip()}\n\n"
+        f"📞 {data['phone']}\n🆔 FaceID: {data['faceid']}\n"
+        f"🕐 {data['ws']}-{data['we']}{dep_name}\n\n"
         f"Endi xodim botga /start bosib, shu raqam bilan kirsin.",
         reply_markup=kb.admin_menu())
 
@@ -638,13 +668,13 @@ async def tpl_menu(cb: CallbackQuery):
         return await cb.answer()
     tin = await db.get_template("tpl_in", db.DEFAULT_TPL_IN)
     tout = await db.get_template("tpl_out", db.DEFAULT_TPL_OUT)
+    twarn = await db.get_template("tpl_warn", db.DEFAULT_TPL_WARN)
+    tsurv = await db.get_template("tpl_survey", db.DEFAULT_TPL_SURVEY)
     await cb.message.answer(
         "📝 Bildirishnoma matnlari.\n\n"
-        "Ishlatsa bo'ladigan belgilar:\n"
-        "{name} — ism, {time} — vaqt, {date} — sana,\n"
-        "{worked} — ishlangan vaqt, {late} — kechikish jumlasi, {late_min} — kechikish daqiqasi\n\n"
-        f"🟢 Hozirgi KIRISH matni:\n———\n{tin}\n———\n\n"
-        f"🔴 Hozirgi CHIQISH matni:\n———\n{tout}\n———",
+        "Belgilar: {name} {time} {date} {worked} {late} {late_min}\n\n"
+        f"🟢 KIRISH:\n{tin}\n\n🔴 CHIQISH:\n{tout}\n\n"
+        f"⚠️ OGOHLANTIRISH:\n{twarn}\n\n📊 SO'ROVNOMA:\n{tsurv}",
         reply_markup=kb.templates_kb())
     await cb.answer()
 
@@ -655,11 +685,14 @@ async def tpl_action(cb: CallbackQuery, state: FSMContext):
     if what == "reset":
         await db.set_setting("tpl_in", db.DEFAULT_TPL_IN)
         await db.set_setting("tpl_out", db.DEFAULT_TPL_OUT)
+        await db.set_setting("tpl_warn", db.DEFAULT_TPL_WARN)
+        await db.set_setting("tpl_survey", db.DEFAULT_TPL_SURVEY)
         await cb.answer("Standartga qaytarildi ✅")
-        await cb.message.answer("↩️ Matnlar standart holatga qaytarildi.")
+        await cb.message.answer("↩️ Barcha matnlar standart holatga qaytarildi.")
         return
+    keymap = {"in": "tpl_in", "out": "tpl_out", "warn": "tpl_warn", "survey": "tpl_survey"}
     await state.set_state(TplState.value)
-    await state.update_data(which="tpl_in" if what == "in" else "tpl_out")
+    await state.update_data(which=keymap.get(what, "tpl_in"))
     await cb.message.answer("Yangi matnni yuboring (belgilar: {name} {time} {date} {worked} {late}):")
     await cb.answer()
 
@@ -926,3 +959,50 @@ async def restore_do(cb: CallbackQuery, state: FSMContext):
             except OSError:
                 pass
     await cb.answer()
+
+
+# ==================== HR / Adminga xabar (javob) ====================
+def all_admin_ids():
+    return set(ADMIN_IDS) | set(EXTRA_ADMINS)
+
+
+@router.callback_query(F.data.startswith("hrreply:"))
+async def hr_reply_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp_tg = int(cb.data.split(":")[1])
+    await state.set_state(HRReply.wait)
+    await state.update_data(emp_tg=emp_tg)
+    await cb.message.answer("✍️ Javobingizni yozing:")
+    await cb.answer()
+
+
+@router.message(HRReply.wait, F.text)
+async def hr_reply_send(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    emp_tg = data.get("emp_tg")
+    await state.clear()
+    try:
+        await msg.bot.send_message(emp_tg, f"👤 Admin javobi:\n\n{msg.text}")
+        await msg.answer("✅ Javob yuborildi.", reply_markup=kb.admin_menu())
+    except Exception as e:
+        await msg.answer(f"❌ Yuborilmadi: {e}", reply_markup=kb.admin_menu())
+
+
+# ==================== Guruh tarixini o'qish (backfill) ====================
+@router.callback_query(F.data == "a:backfill")
+async def backfill_trigger(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await cb.answer("O'qilmoqda... (biroz kuting)")
+    await cb.message.answer("🔄 Guruhning eski xabarlari o'qilmoqda. Bu bir-ikki daqiqa olishi mumkin...")
+    import userbot
+    count, info = await userbot.backfill(limit=5000)
+    if info == "ok":
+        await cb.message.answer(
+            f"✅ Tayyor! Eski xabarlardan {count} ta yangi qayd qo'shildi.\n"
+            "Endi o'tgan davr statistikasi ham to'liq.", reply_markup=kb.admin_menu())
+    else:
+        await cb.message.answer(f"⚠️ O'qib bo'lmadi: {info}\n"
+                                "(Guruhga kamida bitta qurilma xabari kelgach qayta urinib ko'ring.)",
+                                reply_markup=kb.admin_menu())

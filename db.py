@@ -391,6 +391,8 @@ async def clear_unknown():
 # ---------------- Xabar shablonlari (templates) ----------------
 DEFAULT_TPL_IN = "🟢 Kirish qayd etildi\n🕐 Vaqt: {time}{late}\n\nXush kelibsiz! 😊"
 DEFAULT_TPL_OUT = "🔴 Chiqish qayd etildi\n🕐 Vaqt: {time}\n⏱ Ishlangan vaqt: {worked}\n\nYaxshi boring! 👋"
+DEFAULT_TPL_WARN = "⚠️ Eslatma\nIltimos, kerakli ma'lumotlarni to'ldiring."
+DEFAULT_TPL_SURVEY = "📊 So'rovnoma\nIltimos, quyidagi savollarga javob bering."
 
 
 async def get_template(key, default=""):

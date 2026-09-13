@@ -85,6 +85,42 @@ async def post_to_group(text: str) -> bool:
         return False
 
 
+async def backfill(limit=5000):
+    """Guruhning eski xabarlarini o'qib, o'tgan davr qaydlarini bazaga qo'shadi (xabar yubormaydi)."""
+    if not _CLIENT:
+        return 0, "userbot ishlamayapti"
+    gid = await db.get_setting("group_chat_id") or (GROUP_ID or None)
+    if not gid:
+        return 0, "guruh aniqlanmagan"
+    count = 0
+    try:
+        async for message in _CLIENT.iter_messages(int(gid), limit=limit):
+            parsed = parse_device_message(message.message or "")
+            if not parsed:
+                continue
+            emp = await db.get_employee_by_name(parsed["name"])
+            if not emp:
+                await db.record_unknown(parsed["name"])
+                continue
+            ext = f"tg-{gid}-{message.id}"
+            _, inserted = await db.add_event(
+                emp["id"], parsed["ts"], external_id=ext, event_type=parsed["event_type"])
+            if inserted:
+                count += 1
+    except Exception as e:
+        return count, f"xatolik: {e}"
+    return count, "ok"
+
+
+async def _auto_backfill():
+    await asyncio.sleep(8)
+    gid = await db.get_setting("group_chat_id") or (GROUP_ID or None)
+    if gid:
+        count, info = await backfill(limit=5000)
+        if info == "ok":
+            log.info("Backfill: %s ta eski qayd qo'shildi", count)
+
+
 async def start_userbot(bot):
     global _CLIENT
     if not (API_ID and API_HASH and SESSION_STRING):
@@ -149,3 +185,4 @@ async def start_userbot(bot):
     log.info("Userbot ishga tushdi: %s (guruh filtri: %s)",
              me.username or me.first_name, GROUP_ID or "yo'q")
     asyncio.create_task(client.run_until_disconnected())
+    asyncio.create_task(_auto_backfill())

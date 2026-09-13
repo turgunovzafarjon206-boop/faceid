@@ -3,7 +3,7 @@ import datetime as dt
 import calendar
 from aiogram import Router, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -19,6 +19,7 @@ class UserState(StatesGroup):
     wait_phone = State()
     wait_date = State()
     edit_value = State()
+    hr_wait = State()
 
 
 def today_str():
@@ -181,3 +182,45 @@ async def save_user_edit(msg: Message, state: FSMContext):
         return
     await state.clear()
     await msg.answer("✅ Saqlandi.", reply_markup=kb.user_menu())
+
+
+# ==================== ✉️ Adminga xabar (HR) ====================
+@router.message(F.text == "✉️ Adminga xabar")
+async def hr_start(msg: Message, state: FSMContext):
+    if not await _need_emp(msg):
+        return
+    await state.set_state(UserState.hr_wait)
+    await msg.answer("Adminga yubormoqchi bo'lgan xabaringizni yozing "
+                     "(matn, rasm yoki fayl bo'lishi mumkin):")
+
+
+@router.message(UserState.hr_wait)
+async def hr_send(msg: Message, state: FSMContext):
+    emp = await db.get_employee_by_telegram(msg.from_user.id)
+    await state.clear()
+    import admin_handlers
+    ids = admin_handlers.all_admin_ids()
+    who = f"{emp['first_name']} {emp['last_name']} ({emp['phone']})"
+    header = f"📩 HR xabar\n{who}:"
+    btn = kb.hr_reply_kb(msg.from_user.id)
+    sent = 0
+    for aid in ids:
+        try:
+            if msg.photo:
+                await msg.bot.send_photo(aid, msg.photo[-1].file_id,
+                                         caption=f"{header}\n{msg.caption or ''}", reply_markup=btn)
+            elif msg.document:
+                await msg.bot.send_document(aid, msg.document.file_id,
+                                            caption=f"{header}\n{msg.caption or ''}", reply_markup=btn)
+            elif msg.text:
+                await msg.bot.send_message(aid, f"{header}\n{msg.text}", reply_markup=btn)
+            else:
+                continue
+            sent += 1
+        except Exception:
+            pass
+    if sent:
+        await msg.answer("✅ Xabaringiz adminga yuborildi. Tez orada javob beriladi.",
+                         reply_markup=kb.user_menu())
+    else:
+        await msg.answer("❌ Hozircha admin mavjud emas.", reply_markup=kb.user_menu())
