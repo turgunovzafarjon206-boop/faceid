@@ -87,8 +87,43 @@ def _month_bounds(day_str):
     return f"{y}-{m}-01", f"{y}-{m}-{last:02d}"
 
 
-async def show_fine_enabled():
-    return (await db.get_setting("show_fine")) == "1"
+async def show_fine_for(emp, for_admin=False):
+    """Jarima shu xodimga ko'rinadimi? Admin har doim ko'radi."""
+    if for_admin:
+        return True
+    v = await db.get_setting("fine_deps")
+    if v == "all":
+        return True
+    if not v:
+        return False
+    ids = set()
+    for x in v.split(","):
+        x = x.strip()
+        if x.isdigit():
+            ids.add(int(x))
+    return emp.get("department_id") in ids
+
+
+def months_list(n=12):
+    """Oxirgi n oy: [(label, 'YYYY-MM'), ...] (yangi -> eski)."""
+    now = dt.datetime.now()
+    out = []
+    y, m = now.year, now.month
+    for _ in range(n):
+        out.append((f"{UZ_MONTHS[m]} {y}", f"{y}-{m:02d}"))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+    return out
+
+
+def month_bounds(ym):
+    """'2026-09' -> ('2026-09-01', '2026-09-30')"""
+    import calendar
+    y, m = ym.split("-")
+    last = calendar.monthrange(int(y), int(m))[1]
+    return f"{y}-{m}-01", f"{y}-{m}-{last:02d}"
 
 
 def compute_day(emp, events):
@@ -149,7 +184,7 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
 
     # Jarima (oy boshidan shu kungacha ketma-ketlik bo'yicha)
     if emp["count_late"] and r["kechikish_min"] > 0:
-        show = for_admin or await show_fine_enabled()
+        show = await show_fine_for(emp, for_admin)
         if show:
             mf, mt = _month_bounds(day)
             series = await _late_series(emp, mf, day)
@@ -191,7 +226,7 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
     if emp["count_late"]:
         summary += (f"⏰ Kech qolish vaqti: {fmt_duration(late_total)}\n"
                     f"🔴 Kech qolgan kun: {late_days} kun\n")
-        show = for_admin or await show_fine_enabled()
+        show = await show_fine_for(emp, for_admin)
         if show and fine_total:
             summary += f"💰 Jami jarima: {fmt_sum(fine_total)} so'm\n"
     detail = "\n".join(lines) if lines else "Qayd yo'q."
@@ -221,48 +256,94 @@ def _autosize(ws):
         ws.column_dimensions[col[0].column_letter].width = min(width + 3, 40)
 
 
-async def build_period_excel(employees, day_from, day_to, title):
-    """Barcha xodimlar bo'yicha davr hisobotini .xlsx qilib yaratadi. Fayl yo'lini qaytaradi."""
-    wb = Workbook()
+def _safe_sheet_name(name, used):
+    for ch in r'[]:*?/\\':
+        name = name.replace(ch, " ")
+    name = name.strip()[:28] or "Xodim"
+    base = name
+    i = 1
+    while name.lower() in used:
+        i += 1
+        name = f"{base} {i}"[:31]
+    used.add(name.lower())
+    return name
 
-    # 1-varaq: Umumiy
+
+async def build_period_excel(employees, day_from, day_to, title):
+    """1-list: umumiy. Keyingi listlar: har bir xodim uchun kunlik + oylik jami."""
+    wb = Workbook()
     ws = wb.active
     ws.title = "Umumiy"
-    ws.append(["Xodim", "Telefon", "Ishlagan kun", "Ishlangan vaqt",
+    ws.append(["Xodim", "Telefon", "Bo'lim", "Ishlagan kun", "Ishlangan vaqt",
                "Soat (jami)", "Kech qolgan kun", "Kech qolish (daqiqa)", "Jarima (so'm)"])
 
-    # 2-varaq: Kunlik
-    ws2 = wb.create_sheet("Kunlik")
-    ws2.append(["Xodim", "Sana", "Kirish", "Chiqish", "Ishlangan vaqt", "Kechikish (daqiqa)"])
+    used_names = {"umumiy"}
+    # bo'lim nomlari keshi
+    dep_cache = {}
+
+    async def dep_name(dep_id):
+        if not dep_id:
+            return ""
+        if dep_id not in dep_cache:
+            d = await db.get_department(dep_id)
+            dep_cache[dep_id] = d["name"] if d else ""
+        return dep_cache[dep_id]
 
     for emp in employees:
         series = await _late_series(emp, day_from, day_to)
         info, fine_total = _apply_fines(series)
         worked_total = late_total = late_days = worked_days = 0
+
+        # xodim uchun alohida list
+        sheet = wb.create_sheet(_safe_sheet_name(db.full_name(emp), used_names))
+        sheet.append([f"👤 {db.full_name(emp)}  |  📞 {emp['phone']}  |  🏢 {await dep_name(emp.get('department_id')) or 'Bo‘limsiz'}"])
+        sheet.append(["Sana", "Kirish", "Chiqish", "Ishlangan vaqt",
+                      "Kechikish (daqiqa)", "Jarima (so'm)"])
+
         for day, r, late in series:
             worked_days += 1
             worked_total += r["ishlangan_min"]
             late_total += late
             if late > 0:
                 late_days += 1
-            ws2.append([
-                db.full_name(emp), uz_date(day),
-                r["kirish"].strftime("%H:%M") if r["kirish"] else "",
-                r["chiqish"].strftime("%H:%M") if r["chiqish"] else "",
-                fmt_duration(r["ishlangan_min"]), late,
+            fine = info.get(day, (0, 0, 0))[0] if emp["count_late"] else 0
+            sheet.append([
+                uz_date(day),
+                r["kirish"].strftime("%H:%M") if r["kirish"] else "-",
+                r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-",
+                fmt_duration(r["ishlangan_min"]),
+                late,
+                fine,
             ])
+
+        # oylik jami (pastda)
+        sheet.append([])
+        sheet.append(["OYLIK JAMI:"])
+        sheet.append(["Ishlagan kun", worked_days])
+        sheet.append(["Umumiy ishlangan vaqt", fmt_duration(worked_total)])
+        sheet.append(["Soat (jami)", round(worked_total / 60, 1)])
+        sheet.append(["Kech qolgan kun", late_days])
+        sheet.append(["Jami kechikish (daqiqa)", late_total])
+        sheet.append(["Jami jarima (so'm)", fine_total if emp["count_late"] else 0])
+
+        # sarlavha (2-qator) bezaklari
+        for c in range(1, 7):
+            cell = sheet.cell(row=2, column=c)
+            cell.fill = _HEAD_FILL
+            cell.font = _HEAD_FONT
+            cell.alignment = _CENTER
+        _autosize(sheet)
+
+        # umumiy varaqqa qator
         ws.append([
-            db.full_name(emp), emp["phone"], worked_days,
-            fmt_duration(worked_total), round(worked_total / 60, 1),
+            db.full_name(emp), emp["phone"], await dep_name(emp.get("department_id")),
+            worked_days, fmt_duration(worked_total), round(worked_total / 60, 1),
             late_days, late_total, fine_total if emp["count_late"] else 0,
         ])
 
-    _style_header(ws, 8)
-    _style_header(ws2, 6)
+    _style_header(ws, 9)
     _autosize(ws)
-    _autosize(ws2)
     ws.freeze_panes = "A2"
-    ws2.freeze_panes = "A2"
 
     safe = title.replace(" ", "_").replace("'", "")
     path = f"/tmp/{safe}_{day_from}_{day_to}.xlsx"
@@ -298,7 +379,7 @@ async def notify_text(emp, etype, ts):
     late = ""
     if etype == "in" and emp["count_late"] and late_min > 0:
         late = f"\n⏰ Siz {fmt_duration(late_min)} kech qoldingiz."
-        if await show_fine_enabled():
+        if await show_fine_for(emp):
             mf, _ = _month_bounds(day)
             series = await _late_series(emp, mf, day)
             info, _ = _apply_fines(series)

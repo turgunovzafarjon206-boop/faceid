@@ -377,6 +377,23 @@ async def rep_month(cb: CallbackQuery):
     await _send_excel(cb.message, first, last, "Oylik hisobot")
 
 
+@router.callback_query(F.data == "arep:months")
+async def rep_months(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await cb.message.answer("Qaysi oy uchun Excel?",
+                            reply_markup=kb.months_kb("arepmon", reports.months_list(12)))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("arepmon:"))
+async def rep_month_pick(cb: CallbackQuery):
+    ym = cb.data.split(":")[1]
+    first, last = reports.month_bounds(ym)
+    await cb.answer("Tayyorlanmoqda...")
+    await _send_excel(cb.message, first, last, "Oylik hisobot")
+
+
 @router.callback_query(F.data == "arep:period")
 async def rep_period(cb: CallbackQuery, state: FSMContext):
     await state.set_state(AdminReport.period)
@@ -401,17 +418,55 @@ async def rep_period_got(msg: Message, state: FSMContext):
     await _send_excel(msg, d1, d2, "Davr hisoboti")
 
 
+async def _fine_mode():
+    v = await db.get_setting("fine_deps")
+    if v == "all":
+        return "all", set()
+    if not v:
+        return "none", set()
+    ids = set(int(x) for x in v.split(",") if x.strip().isdigit())
+    return "some", ids
+
+
 @router.callback_query(F.data == "a:finetoggle")
-async def fine_toggle(cb: CallbackQuery):
+async def fine_menu(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    cur = await db.get_setting("show_fine")
-    new = "0" if cur == "1" else "1"
-    await db.set_setting("show_fine", new)
-    state = "YOQILDI ✅ (xodim jarimani ko'radi)" if new == "1" else "O'CHIRILDI ❌ (xodim jarimani ko'rmaydi)"
-    await cb.answer("Yangilandi")
-    await cb.message.answer(f"💰 Jarima xodimga ko'rinishi: {state}\n"
-                            "(Admin har doim jarimani ko'radi.)")
+    deps = await db.list_departments()
+    mode, ids = await _fine_mode()
+    await cb.message.answer(
+        "💰 Jarima qaysi bo'limlarga ko'rinsin?\n"
+        "(Admin har doim ko'radi. Bo'lim tanlansa — o'sha bo'lim xodimlari ko'radi.)",
+        reply_markup=kb.fine_deps_kb(deps, ids, mode))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("finedep:"))
+async def fine_set(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    what = cb.data.split(":")[1]
+    if what == "all":
+        await db.set_setting("fine_deps", "all")
+    elif what == "none":
+        await db.set_setting("fine_deps", "")
+    else:
+        mode, ids = await _fine_mode()
+        did = int(what)
+        if mode != "some":
+            ids = set()
+        if did in ids:
+            ids.discard(did)
+        else:
+            ids.add(did)
+        await db.set_setting("fine_deps", ",".join(str(i) for i in sorted(ids)))
+    deps = await db.list_departments()
+    mode, ids = await _fine_mode()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb.fine_deps_kb(deps, ids, mode))
+    except Exception:
+        pass
+    await cb.answer("Saqlandi ✅")
 
 
 @router.callback_query(F.data == "a:today")

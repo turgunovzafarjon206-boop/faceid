@@ -103,6 +103,23 @@ async def cb_month(cb: CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data == "u:months")
+async def cb_months(cb: CallbackQuery):
+    if await _need_emp(cb):
+        await cb.message.answer("Qaysi oy?", reply_markup=kb.months_kb("umon", reports.months_list(12)))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("umon:"))
+async def cb_month_pick(cb: CallbackQuery):
+    emp = await _need_emp(cb)
+    if emp:
+        ym = cb.data.split(":")[1]
+        first, last = reports.month_bounds(ym)
+        await cb.message.answer(await reports.period_text(emp, first, last, "Oylik hisobot"))
+    await cb.answer()
+
+
 @router.callback_query(F.data == "u:date")
 async def cb_date(cb: CallbackQuery, state: FSMContext):
     if await _need_emp(cb):

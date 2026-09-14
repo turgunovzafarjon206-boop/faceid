@@ -15,7 +15,6 @@ def user_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📷 FaceID"), KeyboardButton(text="👤 Mening ma'lumotlarim")],
-            [KeyboardButton(text="📋 To'ldirish"), KeyboardButton(text="📊 So'rovnomalar")],
             [KeyboardButton(text="✉️ HR bo'limiga xabar")],
         ],
         resize_keyboard=True,
@@ -26,8 +25,37 @@ def user_faceid_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Bugun", callback_data="u:today"),
          InlineKeyboardButton(text="🗓 Bu oy", callback_data="u:month")],
-        [InlineKeyboardButton(text="📆 Sana bo'yicha", callback_data="u:date")],
+        [InlineKeyboardButton(text="📆 Boshqa oy", callback_data="u:months"),
+         InlineKeyboardButton(text="🔎 Sana bo'yicha", callback_data="u:date")],
     ])
+
+
+def months_kb(prefix, months):
+    """months: [(label, 'YYYY-MM'), ...]"""
+    rows = []
+    row = []
+    for label, ym in months:
+        row.append(InlineKeyboardButton(text=label, callback_data=f"{prefix}:{ym}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def fine_deps_kb(deps, enabled, mode):
+    """mode: 'all' | 'none' | 'some'. enabled: set of dep ids."""
+    rows = []
+    all_mark = "✅" if mode == "all" else "⬜️"
+    none_mark = "✅" if mode == "none" else "⬜️"
+    rows.append([InlineKeyboardButton(text=f"{all_mark} Hammaga ko'rsatish", callback_data="finedep:all")])
+    rows.append([InlineKeyboardButton(text=f"{none_mark} Hech kimga", callback_data="finedep:none")])
+    for d in deps:
+        mark = "✅" if (mode == "some" and d["id"] in enabled) else "⬜️"
+        rows.append([InlineKeyboardButton(text=f"{mark} 🏢 {d['name']}",
+                                          callback_data=f"finedep:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def user_myinfo_kb():
@@ -178,6 +206,7 @@ def admin_report_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Bugun", callback_data="arep:today"),
          InlineKeyboardButton(text="🗓 Bu oy", callback_data="arep:month")],
+        [InlineKeyboardButton(text="📆 Boshqa oy", callback_data="arep:months")],
         [InlineKeyboardButton(text="⏳ Davr (sana-sana)", callback_data="arep:period")],
     ])
 

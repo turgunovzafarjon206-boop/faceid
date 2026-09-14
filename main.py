@@ -28,8 +28,14 @@ async def main():
     await db.init_db()
     import os
     from config import DB_PATH
+    vol = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
     log.info("DB manzili: %s (fayl mavjud: %s)",
              os.path.abspath(DB_PATH), os.path.exists(DB_PATH))
+    if vol and DB_PATH.startswith(vol):
+        log.info("✅ Baza doimiy diskda (Volume: %s) — ma'lumot deploy'da o'chmaydi.", vol)
+    else:
+        log.warning("⚠️ Baza doimiy diskda EMAS! Har deploy'da ma'lumot (xodim profillari) "
+                    "o'chishi mumkin. Railway'da Volume ulanganini tekshiring.")
     log.info("Bazada hozir %s ta xodim bor", await db.count_employees())
     await admin_handlers.load_admins()
 
