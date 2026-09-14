@@ -139,24 +139,32 @@ async def init_db():
 # ---------------- Xodimlar ----------------
 
 async def add_employee(first_name, last_name, phone, faceid_user_id,
-                       work_start=None, work_end=None, grace_minutes=None):
+                       work_start=None, work_end=None, grace_minutes=None, count_late=1):
     phone = normalize_phone(phone)
     work_start = work_start or DEFAULT_WORK_START
     work_end = work_end or DEFAULT_WORK_END
     grace = GRACE_MINUTES if grace_minutes is None else grace_minutes
-    # FaceID ID ixtiyoriy (guruh o'qishda ism bo'yicha topiladi)
+    # FaceID ID ixtiyoriy (guruh o'qishda username bo'yicha topiladi)
     fid = None if faceid_user_id in (None, "", "-") else str(faceid_user_id)
+    cl = 1 if count_late else 0
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """INSERT INTO employees
                (first_name,last_name,phone,faceid_user_id,work_start,work_end,
                 grace_minutes,count_late,active,created_at)
-               VALUES (?,?,?,?,?,?,?,1,1,?)""",
+               VALUES (?,?,?,?,?,?,?,?,1,?)""",
             (first_name, last_name, phone, fid, work_start,
-             work_end, grace, now_local().isoformat()),
+             work_end, grace, cl, now_local().isoformat()),
         )
         await db.commit()
         return cur.lastrowid
+
+
+def full_name(emp):
+    """Xodim nomi (username). last_name bo'sh bo'lsa faqat username qaytadi."""
+    a = str(emp.get("first_name") or "")
+    b = str(emp.get("last_name") or "")
+    return (a + " " + b).strip()
 
 
 async def _row_to_emp(row):
@@ -673,7 +681,7 @@ async def survey_detailed(survey_id):
         rows = await cur.fetchall()
     by_emp = {}
     for fn, ln, qt, ot, at in rows:
-        key = f"{fn} {ln}"
+        key = (str(fn or "")+" "+str(ln or "")).strip()
         by_emp.setdefault(key, []).append((qt, ot))
     return by_emp
 

@@ -94,7 +94,8 @@ async def show_fine_enabled():
 def compute_day(emp, events):
     """
     events: [(event_type, ts_iso), ...] shu kun uchun.
-    Qaytaradi: dict(kirish, chiqish, ishlangan_min, kechikish_min, kech_qoldi)
+    Faqat kirish yoki faqat chiqish bo'lsa: bori olinadi, yo'g'i None,
+    ish vaqti 0. Kech qolish faqat KIRISH bo'lsa hisoblanadi.
     """
     if not events:
         return None
@@ -102,13 +103,15 @@ def compute_day(emp, events):
     ins = [d for t, d in times if t == "in"]
     outs = [d for t, d in times if t == "out"]
 
-    first_in = min(ins) if ins else times[0][1]
-    last_out = max(outs) if outs else (times[-1][1] if len(times) > 1 else None)
+    first_in = min(ins) if ins else None
+    last_out = max(outs) if outs else None
 
+    # Ish vaqti faqat kirish va chiqish ikkalasi bo'lsa hisoblanadi
     worked = 0
-    if last_out and last_out > first_in:
+    if first_in and last_out and last_out > first_in:
         worked = int((last_out - first_in).total_seconds() // 60)
 
+    # Kech qolish faqat KIRISH bo'lsa
     late_min = 0
     if emp["count_late"] and first_in:
         ws = _parse_hm(emp["work_start"])
@@ -131,11 +134,11 @@ def compute_day(emp, events):
 async def daily_text(emp, day: str, for_admin=False) -> str:
     events = await db.events_for_day(emp["id"], day)
     r = compute_day(emp, events)
-    head = f"👤 {emp['first_name']} {emp['last_name']}\n📅 Sana: {uz_date(day)}\n"
+    head = f"👤 {db.full_name(emp)}\n📅 Sana: {uz_date(day)}\n"
     if not r:
         return head + "\nBu kuni hech qanday qayd yo'q."
-    kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "—"
-    chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "— (hali chiqmagan)"
+    kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
+    chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
     txt = head + (f"\n🟢 Kirish: {kirish}\n🔴 Chiqish: {chiqish}")
     if emp["count_late"]:
         if r["kechikish_min"] > 0:
@@ -172,13 +175,13 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
         late_total += late
         if late > 0:
             late_days += 1
-        kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "—"
-        chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "—"
+        kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
+        chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
         late_part = f" (Kech qolish {late} daqiqa)" if late > 0 else ""
         lines.append(f"{uz_date(day)} {kirish}-{chiqish} | "
                      f"{fmt_duration(r['ishlangan_min'])}{late_part}")
 
-    head = (f"👤 {emp['first_name']} {emp['last_name']}\n"
+    head = (f"👤 {db.full_name(emp)}\n"
             f"🗓 {title} ({uz_date(day_from)} … {uz_date(day_to)})\n\n")
     summary = (
         f"📊 Umumiy natija:\n"
@@ -243,13 +246,13 @@ async def build_period_excel(employees, day_from, day_to, title):
             if late > 0:
                 late_days += 1
             ws2.append([
-                f"{emp['first_name']} {emp['last_name']}", uz_date(day),
+                db.full_name(emp), uz_date(day),
                 r["kirish"].strftime("%H:%M") if r["kirish"] else "",
                 r["chiqish"].strftime("%H:%M") if r["chiqish"] else "",
                 fmt_duration(r["ishlangan_min"]), late,
             ])
         ws.append([
-            f"{emp['first_name']} {emp['last_name']}", emp["phone"], worked_days,
+            db.full_name(emp), emp["phone"], worked_days,
             fmt_duration(worked_total), round(worked_total / 60, 1),
             late_days, late_total, fine_total if emp["count_late"] else 0,
         ])
@@ -310,7 +313,7 @@ async def notify_text(emp, etype, ts):
 
     return safe_format(
         tpl,
-        name=f"{emp['first_name']} {emp['last_name']}",
+        name=db.full_name(emp),
         time=ts.strftime("%H:%M"),
         date=ts.strftime("%d.%m.%Y"),
         worked=worked,

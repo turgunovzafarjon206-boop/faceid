@@ -37,11 +37,10 @@ async def load_admins():
 
 
 class AddEmp(StatesGroup):
-    first = State()
-    last = State()
+    username = State()
     phone = State()
-    faceid = State()
     schedule = State()
+    countlate = State()
     department = State()
 
 
@@ -147,21 +146,16 @@ async def m_reminder(msg: Message):
 async def add_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    await state.set_state(AddEmp.first)
-    await cb.message.answer("Ism kiriting:")
+    await state.set_state(AddEmp.username)
+    await cb.message.answer(
+        "Username kiriting (guruhda ko'rinadigan nom — masalan: Zafarjon Turg'unov "
+        "yoki Ismoil aka). Aynan guruhdagidek yozing:")
     await cb.answer()
 
 
-@router.message(AddEmp.first, F.text)
-async def add_first(msg: Message, state: FSMContext):
-    await state.update_data(first=msg.text.strip())
-    await state.set_state(AddEmp.last)
-    await msg.answer("Familiya kiriting:")
-
-
-@router.message(AddEmp.last, F.text)
-async def add_last(msg: Message, state: FSMContext):
-    await state.update_data(last=msg.text.strip())
+@router.message(AddEmp.username, F.text)
+async def add_username(msg: Message, state: FSMContext):
+    await state.update_data(username=msg.text.strip())
     await state.set_state(AddEmp.phone)
     await msg.answer("Telefon raqam (masalan 901234567):")
 
@@ -169,14 +163,6 @@ async def add_last(msg: Message, state: FSMContext):
 @router.message(AddEmp.phone, F.text)
 async def add_phone(msg: Message, state: FSMContext):
     await state.update_data(phone=msg.text.strip())
-    await state.set_state(AddEmp.faceid)
-    await msg.answer("FaceID ID (ixtiyoriy).\nGuruhdan ism bo'yicha topiladi, "
-                     "shuning uchun kerak bo'lmasa - (chiziqcha) yuboring:")
-
-
-@router.message(AddEmp.faceid, F.text)
-async def add_faceid(msg: Message, state: FSMContext):
-    await state.update_data(faceid=msg.text.strip())
     await state.set_state(AddEmp.schedule)
     await msg.answer("Ish grafigi (format: 08:00-18:00):")
 
@@ -191,16 +177,33 @@ async def add_schedule(msg: Message, state: FSMContext):
         await msg.answer("❌ Format noto'g'ri. Masalan: 08:00-18:00")
         return
     await state.update_data(ws=ws.strip(), we=we.strip())
+    await state.set_state(None)
+    await msg.answer("Kechikish hisoblansinmi?", reply_markup=kb.add_countlate_kb())
+
+
+@router.callback_query(F.data.startswith("addcl:"))
+async def add_countlate(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    data = await state.get_data()
+    if "username" not in data:
+        await cb.answer("Sessiya tugagan, qaytadan boshlang", show_alert=True)
+        await state.clear()
+        return
+    await state.update_data(count_late=int(cb.data.split(":")[1]))
     deps = await db.list_departments()
     if not deps:
-        await _create_employee(msg, state, dep_id=None)
+        await _create_employee(cb.message, state, dep_id=None)
     else:
         await state.set_state(AddEmp.department)
-        await msg.answer("Bo'limni tanlang:", reply_markup=kb.add_dep_pick_kb(deps))
+        await cb.message.answer("Bo'limni tanlang:", reply_markup=kb.add_dep_pick_kb(deps))
+    await cb.answer()
 
 
-@router.callback_query(AddEmp.department, F.data.startswith("adddep:"))
+@router.callback_query(F.data.startswith("adddep:"))
 async def add_pick_dep(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
     dep_id = int(cb.data.split(":")[1]) or None
     await _create_employee(cb.message, state, dep_id=dep_id)
     await cb.answer()
@@ -210,10 +213,11 @@ async def _create_employee(target, state: FSMContext, dep_id):
     data = await state.get_data()
     try:
         emp_id = await db.add_employee(
-            data["first"], data["last"], data["phone"], data["faceid"],
-            work_start=data["ws"], work_end=data["we"])
+            data["username"], "", data["phone"], "-",
+            work_start=data["ws"], work_end=data["we"],
+            count_late=data.get("count_late", 1))
     except Exception as e:
-        await target.answer(f"❌ Xatolik (telefon yoki FaceID ID takrorlangan bo'lishi mumkin):\n{e}")
+        await target.answer(f"❌ Xatolik (telefon takrorlangan bo'lishi mumkin):\n{e}")
         await state.clear()
         return
     if dep_id:
@@ -222,11 +226,12 @@ async def _create_employee(target, state: FSMContext, dep_id):
     if dep_id:
         d = await db.get_department(dep_id)
         dep_name = f"\n🏢 Bo'lim: {d['name']}" if d else ""
+    cl = "hisoblanadi" if data.get("count_late", 1) else "hisoblanmaydi"
     await state.clear()
     await target.answer(
-        f"✅ Xodim qo'shildi!\n\n👤 {data['first']} {data['last']}\n"
-        f"📞 {data['phone']}\n🆔 FaceID: {data['faceid']}\n"
-        f"🕐 {data['ws']}-{data['we']}{dep_name}\n\n"
+        f"✅ Xodim qo'shildi!\n\n👤 Username: {data['username']}\n"
+        f"📞 {data['phone']}\n🕐 {data['ws']}-{data['we']}\n"
+        f"⏰ Kechikish: {cl}{dep_name}\n\n"
         f"Endi xodim botga /start bosib, shu raqam bilan kirsin.",
         reply_markup=kb.admin_menu())
 
@@ -254,9 +259,13 @@ async def show_emp(cb: CallbackQuery):
     if not emp:
         return await cb.answer("Topilmadi", show_alert=True)
     bound = "✅ ulangan" if emp["telegram_id"] else "❌ ulanmagan"
+    dep = "yo'q"
+    if emp.get("department_id"):
+        d = await db.get_department(emp["department_id"])
+        dep = d["name"] if d else "yo'q"
     await cb.message.answer(
-        f"👤 {emp['first_name']} {emp['last_name']}\n📞 {emp['phone']}\n"
-        f"🆔 FaceID: {emp['faceid_user_id']}\n🕐 {emp['work_start']}-{emp['work_end']}\n"
+        f"👤 Username: {db.full_name(emp)}\n📞 {emp['phone']}\n"
+        f"🕐 {emp['work_start']}-{emp['work_end']}\n🏢 Bo'lim: {dep}\n"
         f"⏰ Kechikish: {'hisoblanadi' if emp['count_late'] else 'hisoblanmaydi'}\n"
         f"📲 Telegram: {bound}",
         reply_markup=kb.employee_manage_kb(emp))
@@ -299,7 +308,7 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
     await state.set_state(EditEmp.value)
     await state.update_data(field=field, emp_id=int(emp_id))
     prompts = {
-        "name": "Yangi Ism va Familiya (masalan: Ali Valiyev):",
+        "name": "Yangi username:",
         "phone": "Yangi telefon raqam (901234567):",
         "faceid": "Yangi FaceID ID:",
         "schedule": "Yangi ish grafigi (08:00-18:00):",
@@ -314,9 +323,7 @@ async def save_edit(msg: Message, state: FSMContext):
     field, emp_id, val = data["field"], data["emp_id"], msg.text.strip()
     try:
         if field == "name":
-            parts = val.split()
-            await db.update_employee(emp_id, first_name=parts[0],
-                                     last_name=" ".join(parts[1:]) or parts[0])
+            await db.update_employee(emp_id, first_name=val, last_name="")
         elif field == "phone":
             await db.update_employee(emp_id, phone=val)
         elif field == "faceid":
@@ -332,7 +339,7 @@ async def save_edit(msg: Message, state: FSMContext):
     await state.clear()
     emp = await db.get_employee_by_id(emp_id)
     await msg.answer("✅ Saqlandi.", reply_markup=kb.admin_menu())
-    await msg.answer(f"👤 {emp['first_name']} {emp['last_name']} yangilandi.",
+    await msg.answer(f"👤 {db.full_name(emp)} yangilandi.",
                      reply_markup=kb.employee_manage_kb(emp))
 
 
@@ -418,12 +425,12 @@ async def today_status(cb: CallbackQuery):
         events = await db.events_for_day(emp["id"], day)
         r = reports.compute_day(emp, events)
         if not r:
-            lines.append(f"• {emp['first_name']} {emp['last_name']}: qayd yo'q")
+            lines.append(f"• {db.full_name(emp)}: qayd yo'q")
             continue
         kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "—"
         chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "—"
         late = f" ⏰+{r['kechikish_min']}daq" if r["kech_qoldi"] else ""
-        lines.append(f"• {emp['first_name']} {emp['last_name']}: "
+        lines.append(f"• {db.full_name(emp)}: "
                      f"{kirish}–{chiqish} | {reports.fmt_duration(r['ishlangan_min'])}{late}")
     await cb.message.answer("\n".join(lines) if len(lines) > 1 else "Xodim yo'q.")
     await cb.answer()
@@ -637,8 +644,8 @@ async def dep_show(cb: CallbackQuery):
     members = await db.department_members(dep_id)
     lines = [f"🏢 {dep['name']} — {len(members)} ta xodim\n"]
     for m in members:
-        link = "✅" if m["telegram_id"] else "⛔"
-        lines.append(f"{link} {m['first_name']} {m['last_name']} ({m['phone']})")
+        link = "🟢" if m["telegram_id"] else "🔴"
+        lines.append(f"{link} {db.full_name(m)} ({m['phone']})")
     await cb.message.answer("\n".join(lines), reply_markup=kb.dep_actions_kb(dep_id))
     await cb.answer()
 
@@ -732,7 +739,7 @@ async def rem_list(cb: CallbackQuery):
     lines = ["📋 Ma'lumot to'ldirmaganlar:\n"]
     lines.append(f"⛔ Botga ulanmagan xodimlar ({len(unlinked)}):")
     for e in unlinked[:50]:
-        lines.append(f"  • {e['first_name']} {e['last_name']} ({e['phone']})")
+        lines.append(f"  • {db.full_name(e)} ({e['phone']})")
     if not unlinked:
         lines.append("  — yo'q —")
     lines.append(f"\n❓ Guruhda ko'rilgan, lekin bazada yo'q ({len(unknown)}):")
@@ -779,7 +786,7 @@ async def rem_send_do(msg: Message, state: FSMContext):
         await msg.answer("Bu guruhda ro'yxatdan o'tmaganlar yo'q. ✅", reply_markup=kb.admin_menu())
         return
 
-    names = "\n".join(f"• {e['first_name']} {e['last_name']}" for e in unlinked)
+    names = "\n".join(f"• {db.full_name(e)}" for e in unlinked)
     text = f"🔔 ESLATMA\n\n{msg.text}\n\nQuyidagilar botdan ro'yxatdan o'tishi kerak:\n{names}"
 
     import userbot
@@ -844,13 +851,13 @@ async def adm_add_save(msg: Message, state: FSMContext):
         # agar shu ID xodim bo'lsa, ismini yozamiz
         for e in await db.list_employees():
             if e["telegram_id"] == tg_id:
-                note = f"{e['first_name']} {e['last_name']}"
+                note = db.full_name(e)
                 break
     else:
         emp = await db.get_employee_by_name(val)
         if emp and emp["telegram_id"]:
             tg_id = emp["telegram_id"]
-            note = f"{emp['first_name']} {emp['last_name']}"
+            note = db.full_name(emp)
         elif emp and not emp["telegram_id"]:
             await msg.answer("❌ Bu xodim hali botga /start bosmagan. Avval u ulanishi kerak.",
                              reply_markup=kb.admin_menu())
@@ -886,7 +893,7 @@ async def emp_make_admin(cb: CallbackQuery):
     emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
     if not emp["telegram_id"]:
         return await cb.answer("Xodim botga ulanmagan", show_alert=True)
-    note = f"{emp['first_name']} {emp['last_name']}"
+    note = db.full_name(emp)
     await db.add_admin(emp["telegram_id"], note)
     await load_admins()
     await cb.answer("Admin qilindi ✅")

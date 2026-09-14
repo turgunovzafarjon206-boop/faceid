@@ -162,7 +162,7 @@ async def dr_subs(cb: CallbackQuery):
         return
     await cb.message.answer(f"👁 Topshirganlar ({len(subs)}):")
     for s in subs:
-        who = f"👤 {s['first_name']} {s['last_name']} ({s['phone']})"
+        who = f"👤 {(str(s['first_name'] or '')+' '+str(s['last_name'] or '')).strip()} ({s['phone']})"
         if s["kind"] == "text":
             await cb.bot.send_message(cb.from_user.id, f"{who}\n✍️ {s['content']}")
         elif s["kind"] == "photo":

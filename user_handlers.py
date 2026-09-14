@@ -136,9 +136,8 @@ async def cb_info_view(cb: CallbackQuery):
     if emp:
         late = "hisoblanadi" if emp["count_late"] else "hisoblanmaydi"
         await cb.message.answer(
-            f"👤 {emp['first_name']} {emp['last_name']}\n"
+            f"👤 Username: {db.full_name(emp)}\n"
             f"📞 Telefon: {emp['phone']}\n"
-            f"🆔 FaceID ID: {emp['faceid_user_id']}\n"
             f"🕐 Ish grafigi: {emp['work_start']}-{emp['work_end']}\n"
             f"⏰ Kechikish: {late}")
     await cb.answer()
@@ -159,7 +158,7 @@ async def cb_edit_field(cb: CallbackQuery, state: FSMContext):
     field = cb.data.split(":")[2]
     await state.set_state(UserState.edit_value)
     await state.update_data(field=field)
-    prompt = ("Yangi Ism va Familiya (masalan: Ali Valiyev):" if field == "name"
+    prompt = ("Yangi username:" if field == "name"
               else "Yangi telefon raqam (901234567):")
     await cb.message.answer(prompt)
     await cb.answer()
@@ -172,9 +171,7 @@ async def save_user_edit(msg: Message, state: FSMContext):
     field, val = data["field"], msg.text.strip()
     try:
         if field == "name":
-            parts = val.split()
-            await db.update_employee(emp["id"], first_name=parts[0],
-                                     last_name=" ".join(parts[1:]) or parts[0])
+            await db.update_employee(emp["id"], first_name=val, last_name="")
         elif field == "phone":
             await db.update_employee(emp["id"], phone=val)
     except Exception as e:
@@ -200,7 +197,7 @@ async def hr_send(msg: Message, state: FSMContext):
     await state.clear()
     import admin_handlers
     ids = admin_handlers.all_admin_ids()
-    who = f"{emp['first_name']} {emp['last_name']} ({emp['phone']})"
+    who = f"{db.full_name(emp)} ({emp['phone']})"
     header = f"📩 HR bo'limiga xabar\n{who}:"
     btn = kb.hr_reply_kb(msg.from_user.id)
     sent = 0

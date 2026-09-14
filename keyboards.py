@@ -39,7 +39,7 @@ def user_myinfo_kb():
 
 def user_edit_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Ism-familiya", callback_data="u:edit:name")],
+        [InlineKeyboardButton(text="👤 Username", callback_data="u:edit:name")],
         [InlineKeyboardButton(text="📞 Telefon", callback_data="u:edit:phone")],
     ])
 
@@ -76,6 +76,13 @@ def templates_kb():
         [InlineKeyboardButton(text="⚠️ Ogohlantirish matni", callback_data="tpl:warn"),
          InlineKeyboardButton(text="📊 So'rovnoma matni", callback_data="tpl:survey")],
         [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data="tpl:reset")],
+    ])
+
+
+def add_countlate_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Kechikish hisoblanadi", callback_data="addcl:1")],
+        [InlineKeyboardButton(text="❌ Kechikish hisoblanmaydi", callback_data="addcl:0")],
     ])
 
 
@@ -206,8 +213,9 @@ def employees_kb(employees):
     kb = []
     for e in employees:
         mark = "🟢" if e["telegram_id"] else "🔴"
+        _nm = (str(e['first_name'] or '')+' '+str(e['last_name'] or '')).strip()
         kb.append([InlineKeyboardButton(
-            text=f"{mark} {e['first_name']} {e['last_name']} ({e['phone']})",
+            text=f"{mark} {_nm} ({e['phone']})",
             callback_data=f"emp:{e['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -215,9 +223,8 @@ def employees_kb(employees):
 def employee_manage_kb(emp):
     late = "✅ Kechikish hisoblanadi" if emp["count_late"] else "❌ Kechikish hisoblanmaydi"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Ism/Familiya", callback_data=f"edit:name:{emp['id']}")],
+        [InlineKeyboardButton(text="✏️ Username", callback_data=f"edit:name:{emp['id']}")],
         [InlineKeyboardButton(text="📞 Telefon", callback_data=f"edit:phone:{emp['id']}")],
-        [InlineKeyboardButton(text="🆔 FaceID ID", callback_data=f"edit:faceid:{emp['id']}")],
         [InlineKeyboardButton(text="🕐 Ish grafigi", callback_data=f"edit:schedule:{emp['id']}")],
         [InlineKeyboardButton(text=late, callback_data=f"togglelate:{emp['id']}")],
         [InlineKeyboardButton(text="🏢 Bo'lim tayinlash", callback_data=f"empdep:{emp['id']}")],
