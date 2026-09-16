@@ -128,6 +128,12 @@ def hr_reply_kb(emp_tg_id):
     ])
 
 
+def hr_user_reply_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Javob berish", callback_data="hruser")],
+    ])
+
+
 def dep_manage_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Bo'lim qo'shish", callback_data="dep:add")],

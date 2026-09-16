@@ -51,13 +51,14 @@ async def _late_series(emp, day_from, day_to):
     by_day = {}
     for day, etype, ts in rows:
         by_day.setdefault(day, []).append((etype, ts))
+    exempt_days = await db.exempt_days_for(emp["id"])
     series = []
     for day in sorted(by_day):
         r = compute_day(emp, by_day[day])
         if not r:
             continue
         # Kechirim: bu kun uchun kechikish hisoblanmasin
-        if r["kechikish_min"] and await db.is_exempt(emp["id"], day):
+        if r["kechikish_min"] and day in exempt_days:
             r["kechikish_min"] = 0
             r["kech_qoldi"] = False
         late = r["kechikish_min"] if emp["count_late"] else 0

@@ -760,10 +760,24 @@ async def add_exemptions(emp_ids, day):
 
 
 async def is_exempt(emp_id, day):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT 1 FROM late_exemptions WHERE employee_id=? AND day=?", (emp_id, day))
-        return (await cur.fetchone()) is not None
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT 1 FROM late_exemptions WHERE employee_id=? AND day=?", (emp_id, day))
+            return (await cur.fetchone()) is not None
+    except Exception:
+        return False
+
+
+async def exempt_days_for(emp_id):
+    """Xodimning barcha kechirilgan kunlari (bitta so'rovda)."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT day FROM late_exemptions WHERE employee_id=?", (emp_id,))
+            return {r[0] for r in await cur.fetchall()}
+    except Exception:
+        return set()
 
 
 async def list_exemptions():

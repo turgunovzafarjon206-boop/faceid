@@ -645,13 +645,19 @@ async def bcast_search_results(msg: Message, state: FSMContext):
         return
     found = await db.search_employees(msg.text.strip(), linked_only=True)
     await state.set_state(None)
+    selected = set(data.get("selected", []))
+    found_min = [{"id": e["id"], "first_name": e["first_name"],
+                  "last_name": e["last_name"], "phone": e["phone"]} for e in found]
+    prev = {f["id"]: f for f in data.get("bc_found", [])}
+    for f in found_min:
+        prev[f["id"]] = f
+    await state.update_data(bc_found=list(prev.values()))
     if not found:
         await msg.answer("Hech kim topilmadi. «🔎 Yana qidirish» orqali qayta urinib ko'ring.",
-                         reply_markup=kb.bc_select_kb([], set(data.get("selected", []))))
+                         reply_markup=kb.bc_select_kb(list(prev.values()), selected))
         return
-    selected = set(data.get("selected", []))
     await msg.answer("Belgilang va «✅ Yuborish» bosing:",
-                     reply_markup=kb.bc_select_kb(found, selected))
+                     reply_markup=kb.bc_select_kb(found_min, selected))
 
 
 @router.callback_query(F.data.startswith("bcsel:"))
@@ -664,15 +670,19 @@ async def bcast_select_toggle(cb: CallbackQuery, state: FSMContext):
     else:
         selected.add(eid)
     await state.update_data(selected=list(selected))
-    await cb.answer("Belgilandi" if eid in selected else "Olib tashlandi")
-    # tugmalarni yangilash uchun joriy ro'yxatni qayta chizamiz
+    await cb.answer("✅ belgilandi" if eid in selected else "olib tashlandi")
+    found = data.get("bc_found", [])
+    shown_ids = []
     try:
-        # xabardagi tugmalardagi xodimlarni saqlab, faqat belgilashni yangilaymiz
-        rows = cb.message.reply_markup.inline_keyboard
-        emp_ids = [int(r[0].callback_data.split(":")[1]) for r in rows
-                   if r[0].callback_data.startswith("bcsel:")]
-        emps = [await db.get_employee_by_id(i) for i in emp_ids]
-        await cb.message.edit_reply_markup(reply_markup=kb.bc_select_kb(emps, selected))
+        for r in cb.message.reply_markup.inline_keyboard:
+            cd = r[0].callback_data
+            if cd and cd.startswith("bcsel:"):
+                shown_ids.append(int(cd.split(":")[1]))
+    except Exception:
+        pass
+    shown = [f for f in found if f["id"] in shown_ids] or found
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb.bc_select_kb(shown, selected))
     except Exception:
         pass
 
@@ -1148,7 +1158,8 @@ async def hr_reply_send(msg: Message, state: FSMContext):
     emp_tg = data.get("emp_tg")
     await state.clear()
     try:
-        await msg.bot.send_message(emp_tg, f"👤 Admin javobi:\n\n{msg.text}")
+        await msg.bot.send_message(emp_tg, f"👤 HR javobi:\n\n{msg.text}",
+                                   reply_markup=kb.hr_user_reply_kb())
         await msg.answer("✅ Javob yuborildi.", reply_markup=kb.admin_menu())
     except Exception as e:
         await msg.answer(f"❌ Yuborilmadi: {e}", reply_markup=kb.admin_menu())
@@ -1223,12 +1234,20 @@ async def exempt_search(msg: Message, state: FSMContext):
     found = await db.search_employees(msg.text.strip(), linked_only=False)
     await state.set_state(None)
     selected = set(data.get("ex_selected", []))
+    # topilganlarni holatda saqlaymiz (tugmalarni qayta chizish uchun)
+    found_min = [{"id": e["id"], "first_name": e["first_name"],
+                  "last_name": e["last_name"], "phone": e["phone"]} for e in found]
+    # avvalgi topilganlarni ham saqlab qolamiz (ko'p qidiruvda tanlov yo'qolmasin)
+    prev = {f["id"]: f for f in data.get("ex_found", [])}
+    for f in found_min:
+        prev[f["id"]] = f
+    await state.update_data(ex_found=list(prev.values()))
     if not found:
         await msg.answer("Topilmadi. «🔎 Yana qidirish» bilan urinib ko'ring.",
-                         reply_markup=kb.ex_select_kb([], selected))
+                         reply_markup=kb.ex_select_kb(list(prev.values()), selected))
         return
     await msg.answer(f"📅 {data['ex_day']} — belgilang va «✅ Saqlash»:",
-                     reply_markup=kb.ex_select_kb(found, selected))
+                     reply_markup=kb.ex_select_kb(found_min, selected))
 
 
 @router.callback_query(F.data.startswith("exsel:"))
@@ -1241,13 +1260,20 @@ async def exempt_toggle(cb: CallbackQuery, state: FSMContext):
     else:
         selected.add(eid)
     await state.update_data(ex_selected=list(selected))
-    await cb.answer("Belgilandi" if eid in selected else "Olib tashlandi")
+    await cb.answer("✅ belgilandi" if eid in selected else "olib tashlandi")
+    found = data.get("ex_found", [])
+    # joriy xabardagi ro'yxatni ko'rsatamiz
+    shown_ids = []
     try:
-        rows = cb.message.reply_markup.inline_keyboard
-        emp_ids = [int(r[0].callback_data.split(":")[1]) for r in rows
-                   if r[0].callback_data.startswith("exsel:")]
-        emps = [await db.get_employee_by_id(i) for i in emp_ids]
-        await cb.message.edit_reply_markup(reply_markup=kb.ex_select_kb(emps, selected))
+        for r in cb.message.reply_markup.inline_keyboard:
+            cd = r[0].callback_data
+            if cd and cd.startswith("exsel:"):
+                shown_ids.append(int(cd.split(":")[1]))
+    except Exception:
+        pass
+    shown = [f for f in found if f["id"] in shown_ids] or found
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb.ex_select_kb(shown, selected))
     except Exception:
         pass
 
@@ -1258,9 +1284,13 @@ async def exempt_save(cb: CallbackQuery, state: FSMContext):
     day = data.get("ex_day")
     selected = data.get("ex_selected", [])
     if not day or not selected:
-        await cb.answer("Hech kim tanlanmagan", show_alert=True)
+        return await cb.answer("Hech kim belgilanmagan", show_alert=True)
+    try:
+        await db.add_exemptions(selected, day)
+    except Exception as e:
+        await cb.answer()
+        await cb.message.answer(f"❌ Xatolik: {e}", reply_markup=kb.admin_menu())
         return
-    await db.add_exemptions(selected, day)
     await state.clear()
     await cb.answer("Saqlandi ✅")
     await cb.message.answer(

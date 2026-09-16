@@ -199,6 +199,16 @@ async def save_user_edit(msg: Message, state: FSMContext):
 
 
 # ==================== ✉️ HR bo'limiga xabar ====================
+@router.callback_query(F.data == "hruser")
+async def hr_user_reply(cb: CallbackQuery, state: FSMContext):
+    emp = await db.get_employee_by_telegram(cb.from_user.id)
+    if not emp:
+        return await cb.answer("Avval /start", show_alert=True)
+    await state.set_state(UserState.hr_wait)
+    await cb.message.answer("HR bo'limiga javobingizni yozing (matn, rasm yoki fayl):")
+    await cb.answer()
+
+
 @router.message(F.text == "✉️ HR bo'limiga xabar")
 async def hr_start(msg: Message, state: FSMContext):
     if not await _need_emp(msg):
