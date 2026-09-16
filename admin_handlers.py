@@ -62,6 +62,7 @@ class AdminReport(StatesGroup):
 
 class Broadcast(StatesGroup):
     content = State()
+    search = State()
 
 
 class DeptState(StatesGroup):
@@ -620,6 +621,86 @@ async def _recipients(target):
     if target == "all":
         return await db.linked_employees()
     return await db.linked_employees(dep_id=target[1])
+
+
+@router.callback_query(F.data == "bcto:search")
+async def bcast_search_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(Broadcast.search)
+    await cb.message.answer("Xodim ismi (username) yoki telefon qidiruv so'zini yozing:")
+    await cb.answer()
+
+
+@router.message(Broadcast.search, F.text)
+async def bcast_search_results(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("kind"):
+        await msg.answer("Avval xabar yuboring (matn/rasm/video).")
+        return
+    found = await db.search_employees(msg.text.strip(), linked_only=True)
+    await state.set_state(None)
+    if not found:
+        await msg.answer("Hech kim topilmadi. «🔎 Yana qidirish» orqali qayta urinib ko'ring.",
+                         reply_markup=kb.bc_select_kb([], set(data.get("selected", []))))
+        return
+    selected = set(data.get("selected", []))
+    await msg.answer("Belgilang va «✅ Yuborish» bosing:",
+                     reply_markup=kb.bc_select_kb(found, selected))
+
+
+@router.callback_query(F.data.startswith("bcsel:"))
+async def bcast_select_toggle(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = set(data.get("selected", []))
+    eid = int(cb.data.split(":")[1])
+    if eid in selected:
+        selected.discard(eid)
+    else:
+        selected.add(eid)
+    await state.update_data(selected=list(selected))
+    await cb.answer("Belgilandi" if eid in selected else "Olib tashlandi")
+    # tugmalarni yangilash uchun joriy ro'yxatni qayta chizamiz
+    try:
+        # xabardagi tugmalardagi xodimlarni saqlab, faqat belgilashni yangilaymiz
+        rows = cb.message.reply_markup.inline_keyboard
+        emp_ids = [int(r[0].callback_data.split(":")[1]) for r in rows
+                   if r[0].callback_data.startswith("bcsel:")]
+        emps = [await db.get_employee_by_id(i) for i in emp_ids]
+        await cb.message.edit_reply_markup(reply_markup=kb.bc_select_kb(emps, selected))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "bcsend")
+async def bcast_send_selected(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    kind = data.get("kind")
+    payload = data.get("payload", {})
+    selected = list(data.get("selected", []))
+    if not kind or not selected:
+        await cb.answer("Hech kim tanlanmagan", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer("Yuborilmoqda...")
+    ok = fail = 0
+    for eid in selected:
+        emp = await db.get_employee_by_id(eid)
+        if not emp or not emp["telegram_id"]:
+            continue
+        try:
+            cid = emp["telegram_id"]
+            if kind == "text":
+                await cb.bot.send_message(cid, payload["text"])
+            elif kind == "photo":
+                await cb.bot.send_photo(cid, payload["file_id"], caption=payload["caption"] or None)
+            elif kind == "video":
+                await cb.bot.send_video(cid, payload["file_id"], caption=payload["caption"] or None)
+            ok += 1
+        except Exception:
+            fail += 1
+    await cb.message.answer(f"✅ Tanlangan xodimlarga yuborildi: {ok} ta\n❌ Yuborilmadi: {fail} ta",
+                            reply_markup=kb.admin_menu())
 
 
 @router.callback_query(F.data.startswith("bcto:"))

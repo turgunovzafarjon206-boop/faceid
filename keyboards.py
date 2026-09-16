@@ -155,11 +155,24 @@ def reminder_kb():
 
 
 def recipients_kb(deps, prefix):
-    kb = [[InlineKeyboardButton(text="📢 Hammaga", callback_data=f"{prefix}:all")]]
+    kb = [[InlineKeyboardButton(text="📢 Hammaga", callback_data=f"{prefix}:all")],
+          [InlineKeyboardButton(text="🔎 Xodimlarni tanlash", callback_data=f"{prefix}:search")]]
     for d in deps:
         kb.append([InlineKeyboardButton(text=f"🏢 {d['name']} ({d['count']})",
                                         callback_data=f"{prefix}:d:{d['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def bc_select_kb(employees, selected):
+    rows = []
+    for e in employees:
+        mark = "✅" if e["id"] in selected else "⬜️"
+        nm = (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(text=f"{mark} {nm} ({e['phone']})",
+                                          callback_data=f"bcsel:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="bcto:search")])
+    rows.append([InlineKeyboardButton(text=f"✅ Yuborish ({len(selected)} ta)", callback_data="bcsend")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def emp_department_kb(deps, emp_id):

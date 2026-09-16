@@ -239,7 +239,7 @@ async def list_employees(active_only=True):
         q = "SELECT * FROM employees"
         if active_only:
             q += " WHERE active=1"
-        q += " ORDER BY last_name, first_name"
+        q += " ORDER BY LOWER(first_name), LOWER(last_name)"
         cur = await db.execute(q)
         rows = await cur.fetchall()
         return [await _row_to_emp(r) for r in rows]
@@ -391,7 +391,7 @@ async def department_members(dep_id, active_only=True):
         q = "SELECT * FROM employees WHERE department_id=?"
         if active_only:
             q += " AND active=1"
-        q += " ORDER BY last_name, first_name"
+        q += " ORDER BY LOWER(first_name), LOWER(last_name)"
         cur = await db.execute(q, (dep_id,))
         return [await _row_to_emp(r) for r in await cur.fetchall()]
 
@@ -411,7 +411,7 @@ async def unlinked_employees(dep_id=None):
         if dep_id:
             q += " AND department_id=?"
             args = (dep_id,)
-        q += " ORDER BY last_name, first_name"
+        q += " ORDER BY LOWER(first_name), LOWER(last_name)"
         cur = await db.execute(q, args)
         return [await _row_to_emp(r) for r in await cur.fetchall()]
 
@@ -727,3 +727,16 @@ async def pending_surveys_for(emp):
 async def eligible_linked_for_survey(survey):
     emps = await linked_employees()
     return [e for e in emps if _emp_matches_dep(e, survey["dep_id"])]
+
+
+async def search_employees(query, linked_only=True):
+    """Ism (username) yoki telefon bo'yicha xodim qidiradi."""
+    q = f"%{query.strip().lower()}%"
+    async with aiosqlite.connect(DB_PATH) as db:
+        sql = ("SELECT * FROM employees WHERE active=1 AND "
+               "(LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ? OR phone LIKE ?)")
+        if linked_only:
+            sql += " AND telegram_id IS NOT NULL"
+        sql += " ORDER BY LOWER(first_name) LIMIT 30"
+        cur = await db.execute(sql, (q, q, q))
+        return [await _row_to_emp(r) for r in await cur.fetchall()]
