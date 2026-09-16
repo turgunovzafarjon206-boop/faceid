@@ -91,6 +91,7 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="⚙️ Qurilma sozlamalari", callback_data="a:fset")],
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
         [InlineKeyboardButton(text="💰 Jarima ko'rinishi (xodimga)", callback_data="a:finetoggle")],
+        [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
         [InlineKeyboardButton(text="📋 Bugungi holat", callback_data="a:today")],
@@ -383,4 +384,33 @@ def survey_options_kb(survey_id, q):
     for o in q["_options"]:
         rows.append([InlineKeyboardButton(
             text=o["otext"], callback_data=f"svans:{survey_id}:{q['id']}:{o['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ==================== Kechikishni hisoblamaslik ====================
+def exempt_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Qo'shish (sana + xodimlar)", callback_data="ex:add")],
+        [InlineKeyboardButton(text="📋 Ro'yxat", callback_data="ex:list")],
+    ])
+
+
+def ex_select_kb(employees, selected):
+    rows = []
+    for e in employees:
+        mark = "✅" if e["id"] in selected else "⬜️"
+        nm = (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(text=f"{mark} {nm} ({e['phone']})",
+                                          callback_data=f"exsel:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="ex:search")])
+    rows.append([InlineKeyboardButton(text=f"✅ Saqlash ({len(selected)} ta)", callback_data="exsave")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def exemptions_list_kb(items):
+    rows = []
+    for it in items[:40]:
+        nm = (str(it['first_name'] or '') + ' ' + str(it['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {it['day']} — {nm}", callback_data=f"exdel:{it['emp_id']}:{it['day']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

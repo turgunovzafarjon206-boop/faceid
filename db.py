@@ -126,6 +126,13 @@ async def init_db():
                 answered_at TEXT,
                 UNIQUE(question_id, employee_id)
             );
+
+            CREATE TABLE IF NOT EXISTS late_exemptions (
+                employee_id INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                created_at TEXT,
+                UNIQUE(employee_id, day)
+            );
             """
         )
         # Migratsiya: employees jadvaliga department_id ustunini qo'shamiz (bo'lmasa)
@@ -740,3 +747,36 @@ async def search_employees(query, linked_only=True):
         sql += " ORDER BY LOWER(first_name) LIMIT 30"
         cur = await db.execute(sql, (q, q, q))
         return [await _row_to_emp(r) for r in await cur.fetchall()]
+
+
+# ==================== Kechikishni hisoblamaslik (kechirim) ====================
+async def add_exemptions(emp_ids, day):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for eid in emp_ids:
+            await db.execute(
+                "INSERT OR IGNORE INTO late_exemptions(employee_id,day,created_at) VALUES(?,?,?)",
+                (int(eid), day, now_local().isoformat()))
+        await db.commit()
+
+
+async def is_exempt(emp_id, day):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT 1 FROM late_exemptions WHERE employee_id=? AND day=?", (emp_id, day))
+        return (await cur.fetchone()) is not None
+
+
+async def list_exemptions():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT x.employee_id, x.day, e.first_name, e.last_name
+               FROM late_exemptions x JOIN employees e ON e.id=x.employee_id
+               ORDER BY x.day DESC, e.first_name""")
+        return [{"emp_id": r[0], "day": r[1], "first_name": r[2], "last_name": r[3]}
+                for r in await cur.fetchall()]
+
+
+async def remove_exemption(emp_id, day):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM late_exemptions WHERE employee_id=? AND day=?", (emp_id, day))
+        await db.commit()

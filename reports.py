@@ -56,6 +56,10 @@ async def _late_series(emp, day_from, day_to):
         r = compute_day(emp, by_day[day])
         if not r:
             continue
+        # Kechirim: bu kun uchun kechikish hisoblanmasin
+        if r["kechikish_min"] and await db.is_exempt(emp["id"], day):
+            r["kechikish_min"] = 0
+            r["kech_qoldi"] = False
         late = r["kechikish_min"] if emp["count_late"] else 0
         series.append((day, r, late))
     return series
@@ -184,10 +188,17 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
         return head + "\nBu kuni hech qanday qayd yo'q."
     kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
     chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
+    # Kechirim
+    exempt = r["kechikish_min"] and await db.is_exempt(emp["id"], day)
+    if exempt:
+        r["kechikish_min"] = 0
+        r["kech_qoldi"] = False
     txt = head + (f"\n🟢 Kirish: {kirish}\n🔴 Chiqish: {chiqish}")
     if emp["count_late"]:
         if r["kechikish_min"] > 0:
             txt += f"\n❗️Kech qolish: {r['kechikish_min']} daqiqa"
+        elif exempt:
+            txt += "\n⏰ Kech qolish: hisobga olinmadi (kechirim) ✅"
         else:
             txt += "\n⏰ Kech qolish: yo'q ✅"
     txt += f"\n⏱ Ishlangan vaqt: {fmt_duration(r['ishlangan_min'])}"

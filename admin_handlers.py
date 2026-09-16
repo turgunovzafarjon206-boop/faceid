@@ -85,6 +85,11 @@ class RestoreState(StatesGroup):
     wait_file = State()
 
 
+class Exempt(StatesGroup):
+    date = State()
+    search = State()
+
+
 def _month_range():
     now = dt.datetime.now(TZ)
     first = now.replace(day=1).strftime("%Y-%m-%d")
@@ -1166,3 +1171,119 @@ async def backfill_trigger(cb: CallbackQuery):
         await cb.message.answer(f"⚠️ O'qib bo'lmadi: {info}\n"
                                 "(Guruhga kamida bitta qurilma xabari kelgach qayta urinib ko'ring.)",
                                 reply_markup=kb.admin_menu())
+
+
+# ==================== Kechikishni hisoblamaslik (kechirim) ====================
+@router.callback_query(F.data == "a:exempt")
+async def exempt_menu(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await cb.message.answer(
+        "🚫 Kechikishni hisoblamaslik.\n"
+        "Tanlangan xodimlar uchun tanlangan kunda kech qolish (va jarima) hisoblanmaydi.",
+        reply_markup=kb.exempt_menu_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "ex:add")
+async def exempt_add(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(Exempt.date)
+    await state.update_data(ex_selected=[])
+    await cb.message.answer("Sana kiriting (YYYY-MM-DD, masalan 2026-09-06):")
+    await cb.answer()
+
+
+@router.message(Exempt.date, F.text)
+async def exempt_date(msg: Message, state: FSMContext):
+    try:
+        day = dt.datetime.strptime(msg.text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        await msg.answer("❌ Noto'g'ri format. Masalan: 2026-09-06")
+        return
+    await state.update_data(ex_day=day)
+    await state.set_state(Exempt.search)
+    await msg.answer(f"📅 Sana: {day}\nEndi xodim ismini (username) qidiring:")
+
+
+@router.callback_query(F.data == "ex:search")
+async def exempt_search_again(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(Exempt.search)
+    await cb.message.answer("Xodim ismini yozing:")
+    await cb.answer()
+
+
+@router.message(Exempt.search, F.text)
+async def exempt_search(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("ex_day"):
+        await msg.answer("Avval sanani kiriting.")
+        return
+    found = await db.search_employees(msg.text.strip(), linked_only=False)
+    await state.set_state(None)
+    selected = set(data.get("ex_selected", []))
+    if not found:
+        await msg.answer("Topilmadi. «🔎 Yana qidirish» bilan urinib ko'ring.",
+                         reply_markup=kb.ex_select_kb([], selected))
+        return
+    await msg.answer(f"📅 {data['ex_day']} — belgilang va «✅ Saqlash»:",
+                     reply_markup=kb.ex_select_kb(found, selected))
+
+
+@router.callback_query(F.data.startswith("exsel:"))
+async def exempt_toggle(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = set(data.get("ex_selected", []))
+    eid = int(cb.data.split(":")[1])
+    if eid in selected:
+        selected.discard(eid)
+    else:
+        selected.add(eid)
+    await state.update_data(ex_selected=list(selected))
+    await cb.answer("Belgilandi" if eid in selected else "Olib tashlandi")
+    try:
+        rows = cb.message.reply_markup.inline_keyboard
+        emp_ids = [int(r[0].callback_data.split(":")[1]) for r in rows
+                   if r[0].callback_data.startswith("exsel:")]
+        emps = [await db.get_employee_by_id(i) for i in emp_ids]
+        await cb.message.edit_reply_markup(reply_markup=kb.ex_select_kb(emps, selected))
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "exsave")
+async def exempt_save(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    day = data.get("ex_day")
+    selected = data.get("ex_selected", [])
+    if not day or not selected:
+        await cb.answer("Hech kim tanlanmagan", show_alert=True)
+        return
+    await db.add_exemptions(selected, day)
+    await state.clear()
+    await cb.answer("Saqlandi ✅")
+    await cb.message.answer(
+        f"✅ {len(selected)} ta xodim uchun {day} kuni kechikish hisoblanmaydi.",
+        reply_markup=kb.admin_menu())
+
+
+@router.callback_query(F.data == "ex:list")
+async def exempt_list(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    items = await db.list_exemptions()
+    if not items:
+        await cb.message.answer("Hozircha kechirim yo'q.")
+    else:
+        await cb.message.answer("📋 Kechirimlar (o'chirish uchun bosing):",
+                                reply_markup=kb.exemptions_list_kb(items))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("exdel:"))
+async def exempt_delete(cb: CallbackQuery):
+    _, eid, day = cb.data.split(":")
+    await db.remove_exemption(int(eid), day)
+    await cb.answer("O'chirildi")
+    await cb.message.answer("🗑 Kechirim o'chirildi.")
