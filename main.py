@@ -5,9 +5,10 @@ Ishga tushirish:  python main.py
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message, ErrorEvent
 
 import db
 from config import BOT_TOKEN
@@ -22,6 +23,27 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 log = logging.getLogger("main")
+
+# Menyu tugmalari — bosilganda FSM holati tozalanadi (tiqilib qolmaslik uchun)
+MENU_BUTTONS = {
+    "📷 FaceID boshqarish", "👥 Ma'lumotlar", "🏢 Bo'limlar", "✉️ Xabar",
+    "🔔 Eslatma", "📋 Ma'lumot talablari", "📊 So'rovnoma", "🔙 Oddiy menyu",
+    "📷 FaceID", "👤 Mening ma'lumotlarim", "✉️ HR bo'limiga xabar",
+}
+
+
+class ResetStateMiddleware(BaseMiddleware):
+    """Menyu tugmasi yoki komanda bosilsa, yarim qolgan holatni tozalaydi."""
+    async def __call__(self, handler, event, data):
+        text = getattr(event, "text", None)
+        if text and (text in MENU_BUTTONS or text.startswith("/")):
+            state = data.get("state")
+            if state is not None:
+                try:
+                    await state.clear()
+                except Exception:
+                    pass
+        return await handler(event, data)
 
 
 async def main():
@@ -41,6 +63,24 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=MemoryStorage())
+
+    # Holatni tozalash middleware
+    dp.message.middleware(ResetStateMiddleware())
+
+    # Global xatolik ushlagich — hech qachon "jim qotish" bo'lmasin
+    @dp.error()
+    async def on_error(event: ErrorEvent):
+        log.exception("Handler xatosi: %s", event.exception)
+        try:
+            upd = event.update
+            if upd.callback_query:
+                await upd.callback_query.answer("Xatolik yuz berdi ❌", show_alert=True)
+                await upd.callback_query.message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+            elif upd.message:
+                await upd.message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+        except Exception:
+            pass
+        return True
 
     # Admin routeri birinchi (admin tugmalari ustunlik olishi uchun)
     dp.include_router(admin_handlers.router)
