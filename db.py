@@ -140,6 +140,18 @@ async def init_db():
         cols = [r[1] for r in await cur.fetchall()]
         if "department_id" not in cols:
             await db.execute("ALTER TABLE employees ADD COLUMN department_id INTEGER")
+        # Yangi jadvallar (eski bazada bo'lmasligi mumkin) — kafolatli yaratamiz
+        await db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS late_exemptions (
+                employee_id INTEGER NOT NULL, day TEXT NOT NULL,
+                created_at TEXT, UNIQUE(employee_id, day));
+            CREATE TABLE IF NOT EXISTS departments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL);
+            CREATE TABLE IF NOT EXISTS admins (
+                telegram_id INTEGER PRIMARY KEY, note TEXT, added_at TEXT);
+            """
+        )
         await db.commit()
 
 
@@ -752,6 +764,10 @@ async def search_employees(query, linked_only=True):
 # ==================== Kechikishni hisoblamaslik (kechirim) ====================
 async def add_exemptions(emp_ids, day):
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS late_exemptions (
+                   employee_id INTEGER NOT NULL, day TEXT NOT NULL,
+                   created_at TEXT, UNIQUE(employee_id, day))""")
         for eid in emp_ids:
             await db.execute(
                 "INSERT OR IGNORE INTO late_exemptions(employee_id,day,created_at) VALUES(?,?,?)",
@@ -793,4 +809,21 @@ async def list_exemptions():
 async def remove_exemption(emp_id, day):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM late_exemptions WHERE employee_id=? AND day=?", (emp_id, day))
+        await db.commit()
+
+
+async def set_manual_attendance(emp_id, day, kirish_hm, chiqish_hm):
+    """Berilgan kun uchun kirish/chiqishni qo'lda o'rnatadi (eski qaydlarni almashtiradi)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM events WHERE employee_id=? AND day=?", (emp_id, day))
+        if kirish_hm:
+            ts = f"{day}T{kirish_hm}:00"
+            await db.execute(
+                "INSERT OR REPLACE INTO events(employee_id,event_type,ts,day,external_id) VALUES(?,?,?,?,?)",
+                (emp_id, "in", ts, day, f"manual-{emp_id}-{day}-in"))
+        if chiqish_hm:
+            ts = f"{day}T{chiqish_hm}:00"
+            await db.execute(
+                "INSERT OR REPLACE INTO events(employee_id,event_type,ts,day,external_id) VALUES(?,?,?,?,?)",
+                (emp_id, "out", ts, day, f"manual-{emp_id}-{day}-out"))
         await db.commit()

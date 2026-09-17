@@ -204,7 +204,7 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
             txt += "\n⏰ Kech qolish: yo'q ✅"
     txt += f"\n⏱ Ishlangan vaqt: {fmt_duration(r['ishlangan_min'])}"
     if r.get("ortiqcha_min", 0) > 0:
-        txt += f"\n➕ Ortiqcha ishlangan: {fmt_duration(r['ortiqcha_min'])}"
+        txt += f"\n✅ Ortiqcha ishlangan: {fmt_duration(r['ortiqcha_min'])}"
 
     # Jarima (oy boshidan shu kungacha ketma-ketlik bo'yicha)
     if emp["count_late"] and r["kechikish_min"] > 0:
@@ -239,7 +239,7 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
         kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
         chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
         late_part = f"❗️Kech qolish {late} daqiqa" if late > 0 else ""
-        over_part = f" ➕Ortiqcha {fmt_duration(r['ortiqcha_min'])}" if r.get("ortiqcha_min", 0) > 0 else ""
+        over_part = f" ✅Ortiqcha {fmt_duration(r['ortiqcha_min'])}" if r.get("ortiqcha_min", 0) > 0 else ""
         lines.append(f"{uz_date(day)} {kirish}-{chiqish} | "
                      f"{fmt_duration(r['ishlangan_min'])}{late_part}{over_part}")
 
@@ -251,7 +251,7 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
         f"⏱ Ishlagan vaqt: {fmt_duration(worked_total)}\n"
     )
     if over_total > 0:
-        summary += f"➕ Ortiqcha ishlangan: {fmt_duration(over_total)}\n"
+        summary += f"✅ Ortiqcha ishlangan: {fmt_duration(over_total)}\n"
     if emp["count_late"]:
         summary += (f"⏰ Kech qolish vaqti: {fmt_duration(late_total)}\n"
                     f"🔴 Kech qolgan kun: {late_days} kun\n")

@@ -92,6 +92,7 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
         [InlineKeyboardButton(text="💰 Jarima ko'rinishi (xodimga)", callback_data="a:finetoggle")],
         [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
+        [InlineKeyboardButton(text="🕒 Vaqtni o'zgartirish", callback_data="a:settime")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
         [InlineKeyboardButton(text="📋 Bugungi holat", callback_data="a:today")],
@@ -419,4 +420,15 @@ def exemptions_list_kb(items):
         nm = (str(it['first_name'] or '') + ' ' + str(it['last_name'] or '')).strip()
         rows.append([InlineKeyboardButton(
             text=f"🗑 {it['day']} — {nm}", callback_data=f"exdel:{it['emp_id']}:{it['day']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def settime_select_kb(employees):
+    """Bitta xodim tanlash (vaqtni o'zgartirish uchun)."""
+    rows = []
+    for e in employees:
+        nm = (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(text=f"👤 {nm} ({e['phone']})",
+                                          callback_data=f"stemp:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="st:search")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

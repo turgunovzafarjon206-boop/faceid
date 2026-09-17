@@ -90,6 +90,12 @@ class Exempt(StatesGroup):
     search = State()
 
 
+class SetTime(StatesGroup):
+    search = State()
+    date = State()
+    times = State()
+
+
 def _month_range():
     now = dt.datetime.now(TZ)
     first = now.replace(day=1).strftime("%Y-%m-%d")
@@ -1317,3 +1323,97 @@ async def exempt_delete(cb: CallbackQuery):
     await db.remove_exemption(int(eid), day)
     await cb.answer("O'chirildi")
     await cb.message.answer("🗑 Kechirim o'chirildi.")
+
+
+# ==================== Vaqtni o'zgartirish (manual) ====================
+import re as _re
+
+
+def _parse_times(text):
+    """'Kirish: 8:50 Chiqish: 19:00' -> ('08:50','19:00'). Faqat bittasi ham bo'lishi mumkin."""
+    t = text.lower().replace(".", ":")
+    kir = _re.search(r"kir\w*\D*(\d{1,2}:\d{2})", t)
+    chiq = _re.search(r"chiq\w*\D*(\d{1,2}:\d{2})", t)
+    kh = kir.group(1) if kir else None
+    ch = chiq.group(1) if chiq else None
+    if not kh and not ch:
+        times = _re.findall(r"(\d{1,2}:\d{2})", t)
+        if len(times) >= 2:
+            kh, ch = times[0], times[1]
+        elif len(times) == 1:
+            kh = times[0]
+
+    def norm(x):
+        if not x:
+            return None
+        hh, mm = x.split(":")
+        return f"{int(hh):02d}:{int(mm):02d}"
+    return norm(kh), norm(ch)
+
+
+@router.callback_query(F.data == "a:settime")
+async def settime_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(SetTime.search)
+    await cb.message.answer("🕒 Vaqtni o'zgartirish.\nXodim ismini (username) qidiring:")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "st:search")
+async def settime_search_again(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(SetTime.search)
+    await cb.message.answer("Xodim ismini yozing:")
+    await cb.answer()
+
+
+@router.message(SetTime.search, F.text)
+async def settime_search(msg: Message, state: FSMContext):
+    found = await db.search_employees(msg.text.strip(), linked_only=False)
+    if not found:
+        await msg.answer("Topilmadi. Qaytadan qidiring:")
+        return
+    await state.set_state(None)
+    await msg.answer("Xodimni tanlang:", reply_markup=kb.settime_select_kb(found))
+
+
+@router.callback_query(F.data.startswith("stemp:"))
+async def settime_pick(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    await state.update_data(st_emp=emp["id"], st_name=db.full_name(emp))
+    await state.set_state(SetTime.date)
+    await cb.message.answer(f"👤 {db.full_name(emp)}\nSana kiriting (YYYY-MM-DD):")
+    await cb.answer()
+
+
+@router.message(SetTime.date, F.text)
+async def settime_date(msg: Message, state: FSMContext):
+    try:
+        day = dt.datetime.strptime(msg.text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        await msg.answer("❌ Noto'g'ri format. Masalan: 2026-09-06")
+        return
+    await state.update_data(st_day=day)
+    await state.set_state(SetTime.times)
+    await msg.answer("Vaqtni kiriting. Masalan:\n"
+                     "«Kirish: 8:50 Chiqish: 19:00»\n"
+                     "yoki faqat «Kirish: 8:50» yoki faqat «Chiqish: 19:00»")
+
+
+@router.message(SetTime.times, F.text)
+async def settime_apply(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    kh, ch = _parse_times(msg.text)
+    if not kh and not ch:
+        await msg.answer("❌ Vaqt topilmadi. Masalan: Kirish: 8:50 Chiqish: 19:00")
+        return
+    await db.set_manual_attendance(data["st_emp"], data["st_day"], kh, ch)
+    await state.clear()
+    parts = []
+    parts.append(f"Kirish: {kh}" if kh else "Kirish: -")
+    parts.append(f"Chiqish: {ch}" if ch else "Chiqish: -")
+    await msg.answer(
+        f"✅ {data['st_name']} — {data['st_day']}\n" + "  ".join(parts) +
+        "\nVaqt yangilandi.", reply_markup=kb.admin_menu())
