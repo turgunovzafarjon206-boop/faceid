@@ -18,8 +18,18 @@ def fmt_duration(minutes: int) -> str:
 
 
 def _parse_hm(s: str) -> dt.time:
-    hh, mm = s.split(":")
-    return dt.time(int(hh), int(mm))
+    try:
+        hh, mm = str(s).split(":")
+        return dt.time(int(hh), int(mm))
+    except Exception:
+        return dt.time(8, 0)
+
+
+def _to_naive(d):
+    """Vaqt zonali va zonasiz vaqtlarni bir xil (mahalliy, zonasiz) ko'rinishga keltiradi."""
+    if d.tzinfo is not None:
+        d = d.replace(tzinfo=None)
+    return d
 
 
 UZ_MONTHS = ["", "yanvar", "fevral", "mart", "aprel", "may", "iyun",
@@ -139,7 +149,7 @@ def compute_day(emp, events):
     """
     if not events:
         return None
-    times = [(t, dt.datetime.fromisoformat(ts)) for t, ts in events]
+    times = [(t, _to_naive(dt.datetime.fromisoformat(ts))) for t, ts in events]
     ins = [d for t, d in times if t == "in"]
     outs = [d for t, d in times if t == "out"]
 
