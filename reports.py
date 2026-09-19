@@ -77,20 +77,20 @@ async def _late_series(emp, day_from, day_to):
 
 
 def _apply_fines(series):
-    """Ketma-ket kech qolishga qarab jarima. Qaytaradi: {day: (fine, streak, rate)}, total."""
-    streak = 0
+    """Oy davomida jami kech qolgan marta soniga qarab jarima (ketma-ket emas).
+    1-2-3 → 1000/daq, 4-5-6 → 3000/daq, 7+ → 5000/daq. Qaytaradi: {day:(fine,count,rate)}, total."""
+    count = 0
     total = 0
     info = {}
     for day, r, late in series:
         if late > 0:
-            streak += 1
-            rate = fine_rate(streak)
+            count += 1
+            rate = fine_rate(count)
             fine = late * rate
         else:
-            streak = 0
             rate = 0
             fine = 0
-        info[day] = (fine, streak, rate)
+        info[day] = (fine, count, rate)
         total += fine
     return info, total
 
@@ -107,6 +107,23 @@ async def show_fine_for(emp, for_admin=False):
     if for_admin:
         return True
     v = await db.get_setting("fine_deps")
+    if v == "all":
+        return True
+    if not v:
+        return False
+    ids = set()
+    for x in v.split(","):
+        x = x.strip()
+        if x.isdigit():
+            ids.add(int(x))
+    return emp.get("department_id") in ids
+
+
+async def show_over_for(emp, for_admin=False):
+    """Ortiqcha ish vaqti shu xodimga ko'rinadimi? Admin har doim ko'radi."""
+    if for_admin:
+        return True
+    v = await db.get_setting("over_deps")
     if v == "all":
         return True
     if not v:
@@ -213,7 +230,7 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
         else:
             txt += "\n⏰ Kech qolish: yo'q ✅"
     txt += f"\n⏱ Ishlangan vaqt: {fmt_duration(r['ishlangan_min'])}"
-    if r.get("ortiqcha_min", 0) > 0:
+    if r.get("ortiqcha_min", 0) > 0 and await show_over_for(emp, for_admin):
         txt += f"\n✅ Ortiqcha ishlangan: {fmt_duration(r['ortiqcha_min'])}"
 
     # Jarima (oy boshidan shu kungacha ketma-ketlik bo'yicha)
@@ -238,6 +255,7 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
     late_days = 0
     worked_days = 0
     over_total = 0
+    show_over = await show_over_for(emp, for_admin)
     lines = []
     for day, r, late in series:
         worked_days += 1
@@ -249,7 +267,8 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
         kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
         chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
         late_part = f"❗️Kech qolish {late} daqiqa" if late > 0 else ""
-        over_part = f" ✅Ortiqcha {fmt_duration(r['ortiqcha_min'])}" if r.get("ortiqcha_min", 0) > 0 else ""
+        over_part = (f" ✅Ortiqcha {fmt_duration(r['ortiqcha_min'])}"
+                     if (r.get("ortiqcha_min", 0) > 0 and show_over) else "")
         lines.append(f"{uz_date(day)} {kirish}-{chiqish} | "
                      f"{fmt_duration(r['ishlangan_min'])}{late_part}{over_part}")
 
@@ -260,7 +279,7 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
         f"✅ Ishlagan kun: {worked_days} kun\n"
         f"⏱ Ishlagan vaqt: {fmt_duration(worked_total)}\n"
     )
-    if over_total > 0:
+    if over_total > 0 and show_over:
         summary += f"✅ Ortiqcha ishlangan: {fmt_duration(over_total)}\n"
     if emp["count_late"]:
         summary += (f"⏰ Kech qolish vaqti: {fmt_duration(late_total)}\n"

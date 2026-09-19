@@ -44,17 +44,17 @@ def months_kb(prefix, months):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def fine_deps_kb(deps, enabled, mode):
+def fine_deps_kb(deps, enabled, mode, prefix="finedep"):
     """mode: 'all' | 'none' | 'some'. enabled: set of dep ids."""
     rows = []
     all_mark = "✅" if mode == "all" else "⬜️"
     none_mark = "✅" if mode == "none" else "⬜️"
-    rows.append([InlineKeyboardButton(text=f"{all_mark} Hammaga ko'rsatish", callback_data="finedep:all")])
-    rows.append([InlineKeyboardButton(text=f"{none_mark} Hech kimga", callback_data="finedep:none")])
+    rows.append([InlineKeyboardButton(text=f"{all_mark} Hammaga ko'rsatish", callback_data=f"{prefix}:all")])
+    rows.append([InlineKeyboardButton(text=f"{none_mark} Hech kimga", callback_data=f"{prefix}:none")])
     for d in deps:
         mark = "✅" if (mode == "some" and d["id"] in enabled) else "⬜️"
         rows.append([InlineKeyboardButton(text=f"{mark} 🏢 {d['name']}",
-                                          callback_data=f"finedep:{d['id']}")])
+                                          callback_data=f"{prefix}:{d['id']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -91,6 +91,7 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="⚙️ Qurilma sozlamalari", callback_data="a:fset")],
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
         [InlineKeyboardButton(text="💰 Jarima ko'rinishi (xodimga)", callback_data="a:finetoggle")],
+        [InlineKeyboardButton(text="🕐 Ortiqcha ko'rinishi (xodimga)", callback_data="a:overtoggle")],
         [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
         [InlineKeyboardButton(text="🕒 Vaqtni o'zgartirish", callback_data="a:settime")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
@@ -195,9 +196,27 @@ def admin_data_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")],
         [InlineKeyboardButton(text="👥 Xodimlar ro'yxati", callback_data="a:listemp")],
+        [InlineKeyboardButton(text="🗂 Xodim ma'lumoti", callback_data="a:empdata")],
+        [InlineKeyboardButton(text="📋 To'liq to'ldirmaganlar", callback_data="ed:incomplete")],
         [InlineKeyboardButton(text="👑 Adminlar", callback_data="a:admins")],
         [InlineKeyboardButton(text="💾 Zaxira nusxa", callback_data="a:backup"),
          InlineKeyboardButton(text="♻️ Tiklash", callback_data="a:restore")],
+    ])
+
+
+def empdata_select_kb(employees):
+    rows = []
+    for e in employees:
+        nm = (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(text=f"👤 {nm} ({e['phone']})",
+                                          callback_data=f"edshow:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="ed:search")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def empdata_actions_kb(emp_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬇️ Yuklab olish (ZIP)", callback_data=f"eddl:{emp_id}")],
     ])
 
 

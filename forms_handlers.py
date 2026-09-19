@@ -225,3 +225,145 @@ async def fill_receive(msg: Message, state: FSMContext):
     await db.add_submission(data["req_id"], emp["id"], content, kind)
     await state.clear()
     await msg.answer("✅ Qabul qilindi. Rahmat!", reply_markup=kb.user_menu())
+
+
+# ==================== ADMIN: Xodim ma'lumoti ====================
+import io, zipfile, os
+from aiogram.types import InputMediaPhoto, InputMediaDocument
+
+
+class EmpData(StatesGroup):
+    search = State()
+
+
+def _nm(e):
+    return (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+
+
+@router.callback_query(F.data == "a:empdata")
+async def empdata_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(EmpData.search)
+    await cb.message.answer("🗂 Xodim ma'lumoti.\nXodim ismini (username) qidiring:")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "ed:search")
+async def empdata_search_again(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(EmpData.search)
+    await cb.message.answer("Xodim ismini yozing:")
+    await cb.answer()
+
+
+@router.message(EmpData.search, F.text)
+async def empdata_search(msg: Message, state: FSMContext):
+    found = await db.search_employees(msg.text.strip(), linked_only=False)
+    await state.set_state(None)
+    if not found:
+        await msg.answer("Topilmadi. Qaytadan qidiring:")
+        return
+    await msg.answer("Xodimni tanlang:", reply_markup=kb.empdata_select_kb(found))
+
+
+@router.callback_query(F.data.startswith("edshow:"))
+async def empdata_show(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    subs = await db.employee_submissions(emp["id"])
+    dep = "yo'q"
+    if emp.get("department_id"):
+        d = await db.get_department(emp["department_id"])
+        dep = d["name"] if d else "yo'q"
+    header = (f"🗂 <b>{_nm(emp)}</b>\n📞 {emp['phone']}\n🏢 Bo'lim: {dep}\n"
+              f"🕐 Grafik: {emp['work_start']}-{emp['work_end']}\n"
+              f"{'━'*20}\n")
+    if not subs:
+        await cb.message.answer(header + "\nHali hech qanday ma'lumot topshirmagan.",
+                                reply_markup=kb.empdata_actions_kb(emp["id"]))
+        return await cb.answer()
+
+    lines = [header]
+    for i, s in enumerate(subs, 1):
+        if s["kind"] == "text":
+            lines.append(f"{i}. <b>{s['title']}</b>:\n   {s['content']}")
+        elif s["kind"] == "photo":
+            lines.append(f"{i}. <b>{s['title']}</b>: 🖼 rasm (pastda)")
+        else:
+            lines.append(f"{i}. <b>{s['title']}</b>: 📎 fayl (pastda)")
+    await cb.message.answer("\n\n".join(lines), reply_markup=kb.empdata_actions_kb(emp["id"]))
+
+    # rasmlar va fayllarni alohida albom qilib yuboramiz
+    photos = [InputMediaPhoto(media=s["content"], caption=s["title"])
+              for s in subs if s["kind"] == "photo"]
+    docs = [InputMediaDocument(media=s["content"], caption=s["title"])
+            for s in subs if s["kind"] == "file"]
+    for i in range(0, len(photos), 10):
+        try:
+            await cb.bot.send_media_group(cb.from_user.id, photos[i:i+10])
+        except Exception:
+            pass
+    for i in range(0, len(docs), 10):
+        try:
+            await cb.bot.send_media_group(cb.from_user.id, docs[i:i+10])
+        except Exception:
+            pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("eddl:"))
+async def empdata_download(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    subs = await db.employee_submissions(emp["id"])
+    await cb.answer("Tayyorlanmoqda...")
+
+    summary = [f"Xodim: {_nm(emp)}", f"Telefon: {emp['phone']}",
+               f"Grafik: {emp['work_start']}-{emp['work_end']}", "=" * 30, ""]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        idx = 0
+        for s in subs:
+            idx += 1
+            safe_title = "".join(c for c in s["title"] if c.isalnum() or c in " _-").strip()
+            if s["kind"] == "text":
+                summary.append(f"{idx}. {s['title']}: {s['content']}")
+            else:
+                summary.append(f"{idx}. {s['title']}: (fayl ilova qilindi)")
+                try:
+                    f = await cb.bot.get_file(s["content"])
+                    bio = io.BytesIO()
+                    await cb.bot.download_file(f.file_path, destination=bio)
+                    ext = os.path.splitext(f.file_path)[1] or (".jpg" if s["kind"] == "photo" else "")
+                    zf.writestr(f"{idx:02d}_{safe_title}{ext}", bio.getvalue())
+                except Exception as e:
+                    summary.append(f"    (faylni olishda xatolik: {e})")
+        zf.writestr("00_MALUMOTLAR.txt", "\n".join(summary))
+
+    buf.seek(0)
+    fname = "".join(c for c in _nm(emp) if c.isalnum() or c in " _-").strip().replace(" ", "_")
+    path = f"/tmp/{fname or 'xodim'}_malumotlari.zip"
+    with open(path, "wb") as fp:
+        fp.write(buf.getvalue())
+    await cb.message.answer_document(FSInputFile(path, filename=f"{fname or 'xodim'}_malumotlari.zip"),
+                                     caption=f"⬇️ {_nm(emp)} — barcha ma'lumotlari (bitta fayl)")
+
+
+@router.callback_query(F.data == "ed:incomplete")
+async def empdata_incomplete(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    rep = await db.incomplete_report()
+    if not rep:
+        await cb.message.answer("✅ Hamma xodim barcha ma'lumotlarni to'ldirgan.")
+        return await cb.answer()
+    lines = [f"📋 To'liq to'ldirmaganlar ({len(rep)} ta):\n"]
+    for r in rep:
+        emp = r["emp"]
+        lines.append(f"👤 {_nm(emp)} ({emp['phone']})\n   Yetishmaydi: {', '.join(r['missing'])}")
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3500):
+        await cb.message.answer(text[i:i+3500])
+    await cb.answer()

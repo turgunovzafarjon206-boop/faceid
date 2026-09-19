@@ -176,19 +176,26 @@ async def add_username(msg: Message, state: FSMContext):
 async def add_phone(msg: Message, state: FSMContext):
     await state.update_data(phone=msg.text.strip())
     await state.set_state(AddEmp.schedule)
-    await msg.answer("Ish grafigi (format: 08:00-18:00):")
+    await msg.answer("Ish grafigi (format: 08:00-18:00).\n"
+                     "Grafik kerak bo'lmasa - (chiziqcha) yuboring:")
 
 
 @router.message(AddEmp.schedule, F.text)
 async def add_schedule(msg: Message, state: FSMContext):
-    try:
-        ws, we = msg.text.strip().split("-")
-        dt.datetime.strptime(ws.strip(), "%H:%M")
-        dt.datetime.strptime(we.strip(), "%H:%M")
-    except ValueError:
-        await msg.answer("❌ Format noto'g'ri. Masalan: 08:00-18:00")
-        return
-    await state.update_data(ws=ws.strip(), we=we.strip())
+    val = msg.text.strip()
+    if val == "-":
+        # grafiksiz — standart qiymatlar ishlatiladi
+        from config import DEFAULT_WORK_START, DEFAULT_WORK_END
+        await state.update_data(ws=DEFAULT_WORK_START, we=DEFAULT_WORK_END)
+    else:
+        try:
+            ws, we = val.split("-")
+            dt.datetime.strptime(ws.strip(), "%H:%M")
+            dt.datetime.strptime(we.strip(), "%H:%M")
+        except ValueError:
+            await msg.answer("❌ Format noto'g'ri. Masalan: 08:00-18:00 yoki - (chiziqcha)")
+            return
+        await state.update_data(ws=ws.strip(), we=we.strip())
     await state.set_state(None)
     await msg.answer("Kechikish hisoblansinmi?", reply_markup=kb.add_countlate_kb())
 
@@ -476,6 +483,57 @@ async def fine_set(cb: CallbackQuery):
     mode, ids = await _fine_mode()
     try:
         await cb.message.edit_reply_markup(reply_markup=kb.fine_deps_kb(deps, ids, mode))
+    except Exception:
+        pass
+    await cb.answer("Saqlandi ✅")
+
+
+async def _over_mode():
+    v = await db.get_setting("over_deps")
+    if v == "all":
+        return "all", set()
+    if not v:
+        return "none", set()
+    ids = set(int(x) for x in v.split(",") if x.strip().isdigit())
+    return "some", ids
+
+
+@router.callback_query(F.data == "a:overtoggle")
+async def over_menu(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    deps = await db.list_departments()
+    mode, ids = await _over_mode()
+    await cb.message.answer(
+        "🕐 Ortiqcha ish vaqti qaysi bo'limlarga ko'rinsin?\n"
+        "(Admin har doim ko'radi.)",
+        reply_markup=kb.fine_deps_kb(deps, ids, mode, prefix="overdep"))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("overdep:"))
+async def over_set(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    what = cb.data.split(":")[1]
+    if what == "all":
+        await db.set_setting("over_deps", "all")
+    elif what == "none":
+        await db.set_setting("over_deps", "")
+    else:
+        mode, ids = await _over_mode()
+        did = int(what)
+        if mode != "some":
+            ids = set()
+        if did in ids:
+            ids.discard(did)
+        else:
+            ids.add(did)
+        await db.set_setting("over_deps", ",".join(str(i) for i in sorted(ids)))
+    deps = await db.list_departments()
+    mode, ids = await _over_mode()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb.fine_deps_kb(deps, ids, mode, prefix="overdep"))
     except Exception:
         pass
     await cb.answer("Saqlandi ✅")

@@ -827,3 +827,25 @@ async def set_manual_attendance(emp_id, day, kirish_hm, chiqish_hm):
                 "INSERT OR REPLACE INTO events(employee_id,event_type,ts,day,external_id) VALUES(?,?,?,?,?)",
                 (emp_id, "out", ts, day, f"manual-{emp_id}-{day}-out"))
         await db.commit()
+
+
+async def employee_submissions(emp_id):
+    """Xodim topshirgan barcha ma'lumotlar (talab nomi bilan)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT r.title, s.kind, s.content, s.submitted_at, r.id
+               FROM data_submissions s JOIN data_requests r ON r.id=s.request_id
+               WHERE s.employee_id=? ORDER BY r.id""", (emp_id,))
+        return [{"title": r[0], "kind": r[1], "content": r[2], "at": r[3], "req_id": r[4]}
+                for r in await cur.fetchall()]
+
+
+async def incomplete_report():
+    """To'ldirmagan xodimlar: [{emp, missing:[titles]}]."""
+    emps = await list_employees()
+    out = []
+    for emp in emps:
+        pending = await pending_requests_for(emp)
+        if pending:
+            out.append({"emp": emp, "missing": [p["title"] for p in pending]})
+    return out
