@@ -42,6 +42,16 @@ def uz_date(day_str):
     return f"{int(d)}-{UZ_MONTHS[int(m)]} {y}"
 
 
+UZ_WEEKDAYS = ["dushanba", "seshanba", "chorshanba", "payshanba",
+               "juma", "shanba", "yakshanba"]
+
+
+def uz_weekday(day_str):
+    """'2026-09-04' -> 'juma'"""
+    d = dt.datetime.strptime(day_str, "%Y-%m-%d")
+    return UZ_WEEKDAYS[d.weekday()]
+
+
 def fmt_sum(x):
     return f"{int(x):,}".replace(",", " ")
 
@@ -356,7 +366,7 @@ async def build_period_excel(employees, day_from, day_to, title):
         # xodim uchun alohida list
         sheet = wb.create_sheet(_safe_sheet_name(db.full_name(emp), used_names))
         sheet.append([f"👤 {db.full_name(emp)}  |  📞 {emp['phone']}  |  🏢 {await dep_name(emp.get('department_id')) or 'Bo‘limsiz'}"])
-        sheet.append(["Sana", "Kirish", "Chiqish", "Ishlangan vaqt",
+        sheet.append(["Sana", "Hafta kuni", "Kirish", "Chiqish", "Ishlangan vaqt",
                       "Ortiqcha (daqiqa)", "Kechikish (daqiqa)", "Jarima (so'm)"])
 
         over_total = 0
@@ -370,6 +380,7 @@ async def build_period_excel(employees, day_from, day_to, title):
             fine = info.get(day, (0, 0, 0))[0] if emp["count_late"] else 0
             sheet.append([
                 uz_date(day),
+                uz_weekday(day),
                 r["kirish"].strftime("%H:%M") if r["kirish"] else "-",
                 r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-",
                 fmt_duration(r["ishlangan_min"]),
@@ -390,7 +401,7 @@ async def build_period_excel(employees, day_from, day_to, title):
         sheet.append(["Jami jarima (so'm)", fine_total if emp["count_late"] else 0])
 
         # sarlavha (2-qator) bezaklari
-        for c in range(1, 8):
+        for c in range(1, 9):
             cell = sheet.cell(row=2, column=c)
             cell.fill = _HEAD_FILL
             cell.font = _HEAD_FONT
