@@ -77,20 +77,21 @@ async def _late_series(emp, day_from, day_to):
 
 
 def _apply_fines(series):
-    """Oy davomida jami kech qolgan marta soniga qarab jarima (ketma-ket emas).
-    1-2-3 → 1000/daq, 4-5-6 → 3000/daq, 7+ → 5000/daq. Qaytaradi: {day:(fine,count,rate)}, total."""
-    count = 0
+    """Ketma-ket kech qolishga qarab jarima. O'z vaqtida kelgan kun ketma-ketlikni nolga tushiradi.
+    1-2-3 → 1000/daq, 4-5-6 → 3000/daq, 7+ → 5000/daq. Qaytaradi: {day:(fine,streak,rate)}, total."""
+    streak = 0
     total = 0
     info = {}
     for day, r, late in series:
         if late > 0:
-            count += 1
-            rate = fine_rate(count)
+            streak += 1
+            rate = fine_rate(streak)
             fine = late * rate
         else:
+            streak = 0
             rate = 0
             fine = 0
-        info[day] = (fine, count, rate)
+        info[day] = (fine, streak, rate)
         total += fine
     return info, total
 

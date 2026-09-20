@@ -150,6 +150,28 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL);
             CREATE TABLE IF NOT EXISTS admins (
                 telegram_id INTEGER PRIMARY KEY, note TEXT, added_at TEXT);
+            CREATE TABLE IF NOT EXISTS unknown_names (
+                name TEXT PRIMARY KEY, last_seen TEXT, cnt INTEGER DEFAULT 1);
+            CREATE TABLE IF NOT EXISTS data_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, dtype TEXT NOT NULL,
+                dep_id INTEGER, deadline TEXT, mandatory INTEGER DEFAULT 0, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS data_submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL,
+                employee_id INTEGER NOT NULL, content TEXT, kind TEXT, submitted_at TEXT,
+                UNIQUE(request_id, employee_id));
+            CREATE TABLE IF NOT EXISTS surveys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, dep_id INTEGER,
+                active INTEGER DEFAULT 1, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS survey_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, survey_id INTEGER NOT NULL, qtext TEXT NOT NULL,
+                image_file_id TEXT, ord INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS survey_options (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER NOT NULL,
+                otext TEXT NOT NULL, ord INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS survey_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, survey_id INTEGER NOT NULL,
+                question_id INTEGER NOT NULL, option_id INTEGER NOT NULL, employee_id INTEGER NOT NULL,
+                answered_at TEXT, UNIQUE(question_id, employee_id));
             """
         )
         await db.commit()
