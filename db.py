@@ -959,8 +959,22 @@ async def _alias_map():
         return {}
 
 
+async def is_lesson_employee(emp):
+    """Xodim 'O'quv bo'limi'da bo'lsa True — dars jadvali faqat shularga amal qiladi."""
+    dep_id = emp.get("department_id")
+    if not dep_id:
+        return False
+    d = await get_department(dep_id)
+    if not d:
+        return False
+    name = str(d["name"]).lower().replace("'", "").replace("`", "").replace("ʻ", "")
+    return "quv" in name  # o'quv / oquv / uquv bo'limi
+
+
 async def schedule_name_for_employee(emp):
-    """Xodimga mos dars-jadval nomini topadi (alias yoki avto familiya+harf)."""
+    """Xodimga mos dars-jadval nomini topadi (faqat O'quv bo'limi uchun)."""
+    if not await is_lesson_employee(emp):
+        return None
     names = await schedule_teacher_names()
     if not names:
         return None
@@ -968,7 +982,6 @@ async def schedule_name_for_employee(emp):
     for sn, eid in aliases.items():
         if eid == emp["id"] and sn in names:
             return sn
-    # avto moslik
     surn_e = _emp_tokens(emp)
     for sn in names:
         surn, init = _sched_parse(sn)
@@ -1003,4 +1016,24 @@ async def unmatched_schedule_names():
             continue
         if _auto_match(sn, emps) is None:
             out.append(sn)
+    return out
+
+
+async def requests_for_employee(emp):
+    """Xodimga tegishli barcha ma'lumot talablari (topshirilган/topshirilmagan belgisi bilan)."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT id,title,dtype,dep_id,deadline,mandatory FROM data_requests ORDER BY id")
+            reqs = await cur.fetchall()
+            cur2 = await db.execute("SELECT request_id FROM data_submissions WHERE employee_id=?", (emp["id"],))
+            done = {r[0] for r in await cur2.fetchall()}
+    except Exception:
+        return []
+    out = []
+    for r in reqs:
+        req = {"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
+               "deadline": r[4], "mandatory": r[5]}
+        if _emp_matches_dep(emp, req["dep_id"]):
+            req["submitted"] = req["id"] in done
+            out.append(req)
     return out

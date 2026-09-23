@@ -71,6 +71,16 @@ def user_edit_kb():
     ])
 
 
+def user_data_edit_kb(reqs):
+    """Xodim to'ldiradigan/o'zgartiradigan ma'lumotlar + telefon."""
+    rows = [[InlineKeyboardButton(text="📞 Telefon", callback_data="u:edit:phone")]]
+    for r in reqs:
+        mark = "✅" if r.get("submitted") else ("🔴" if r["mandatory"] else "🟢")
+        rows.append([InlineKeyboardButton(text=f"{mark} {r['title']}",
+                                          callback_data=f"fillreq:{r['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # ==================== ADMIN ====================
 def admin_menu():
     return ReplyKeyboardMarkup(
@@ -159,8 +169,9 @@ def dep_actions_kb(dep_id):
 
 def reminder_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📨 To'ldirmaganlarga eslatma (shaxsan)", callback_data="rem:data")],
         [InlineKeyboardButton(text="📋 To'ldirmaganlar ro'yxati", callback_data="rem:list")],
-        [InlineKeyboardButton(text="📢 Guruhga eslatma yuborish", callback_data="rem:send")],
+        [InlineKeyboardButton(text="📢 Guruhga eslatma (ro'yxatdan o'tmagan)", callback_data="rem:send")],
     ])
 
 

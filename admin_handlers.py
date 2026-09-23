@@ -953,6 +953,35 @@ async def tpl_save(msg: Message, state: FSMContext):
 
 
 # ==================== Eslatma (to'ldirmaganlar) ====================
+@router.callback_query(F.data == "rem:data")
+async def rem_data(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await cb.answer("Yuborilmoqda...")
+    tpl = await db.get_template("tpl_warn", db.DEFAULT_TPL_WARN)
+    emps = await db.linked_employees()
+    sent = 0
+    for emp in emps:
+        pending = await db.pending_requests_for(emp)
+        if not pending:
+            continue
+        lines = [tpl, "", "Quyidagi ma'lumotlar to'ldirilmagan:"]
+        for p in pending:
+            dl = f" — {p['deadline']} gacha" if p["deadline"] else ""
+            mark = "🔴" if p["mandatory"] else "🟢"
+            lines.append(f"{mark} {p['title']}{dl}")
+        lines.append("\nTo'ldirish uchun pastdagi tugmani bosing:")
+        try:
+            await cb.bot.send_message(emp["telegram_id"], "\n".join(lines),
+                                      reply_markup=kb.pending_reqs_kb(pending))
+            sent += 1
+        except Exception:
+            pass
+    await cb.message.answer(
+        f"✅ Eslatma {sent} ta xodimga yuborildi (to'ldirilmagan ma'lumoti borlarga).",
+        reply_markup=kb.admin_menu())
+
+
 @router.callback_query(F.data == "rem:list")
 async def rem_list(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
@@ -1562,8 +1591,17 @@ async def sched_bind_pick(cb: CallbackQuery, state: FSMContext):
     if not sched_name:
         return await cb.answer("Eskirgan, qaytadan oching", show_alert=True)
     await state.update_data(bind_name=sched_name)
-    await state.set_state(SchedBind.search)
-    await cb.message.answer(f"«{sched_name}» kimga tegishli? Botdagi ismni qidiring:")
+    # familiya bo'yicha avto-qidiruv — admin yozmasdan o'xshashlardan tanlaydi
+    surname = sched_name.split()[0] if sched_name.split() else sched_name
+    found = await db.search_employees(surname.strip("."), linked_only=False)
+    if found:
+        await state.set_state(None)
+        await cb.message.answer(
+            f"«{sched_name}» kimga tegishli? O'xshashlardan tanlang "
+            "(yoki «🔎 Yana qidirish»):", reply_markup=kb.bind_pick_kb(found))
+    else:
+        await state.set_state(SchedBind.search)
+        await cb.message.answer(f"«{sched_name}» kimga tegishli? Botdagi ismni qidiring:")
     await cb.answer()
 
 

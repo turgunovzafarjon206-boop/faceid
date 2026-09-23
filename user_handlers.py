@@ -152,21 +152,33 @@ async def cb_info_view(cb: CallbackQuery):
     emp = await _need_emp(cb)
     if emp:
         late = "hisoblanadi" if emp["count_late"] else "hisoblanmaydi"
-        await cb.message.answer(
-            f"👤 Username: {db.full_name(emp)}\n"
-            f"📞 Telefon: {emp['phone']}\n"
-            f"🕐 Ish grafigi: {emp['work_start']}-{emp['work_end']}\n"
-            f"⏰ Kechikish: {late}")
+        txt = (f"👤 Username: {db.full_name(emp)}\n"
+               f"📞 Telefon: {emp['phone']}\n"
+               f"🕐 Ish grafigi: {emp['work_start']}-{emp['work_end']}\n"
+               f"⏰ Kechikish: {late}")
+        subs = await db.employee_submissions(emp["id"])
+        if subs:
+            txt += "\n\n📋 To'ldirilgan ma'lumotlar:"
+            for s in subs:
+                if s["kind"] == "text":
+                    txt += f"\n• {s['title']}: {s['content']}"
+                elif s["kind"] == "photo":
+                    txt += f"\n• {s['title']}: 🖼 rasm"
+                else:
+                    txt += f"\n• {s['title']}: 📎 fayl"
+        await cb.message.answer(txt)
     await cb.answer()
 
 
 @router.callback_query(F.data == "u:info:edit")
 async def cb_info_edit(cb: CallbackQuery):
-    if await _need_emp(cb):
+    emp = await _need_emp(cb)
+    if emp:
+        reqs = await db.requests_for_employee(emp)
         await cb.message.answer(
             "Nimani o'zgartirmoqchisiz?\n"
-            "(FaceID ID va ish grafigini faqat administrator o'zgartiradi.)",
-            reply_markup=kb.user_edit_kb())
+            "(Ma'lumotni bosib, yangi qiymatni yuboring.)",
+            reply_markup=kb.user_data_edit_kb(reqs))
     await cb.answer()
 
 

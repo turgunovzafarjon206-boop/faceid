@@ -104,25 +104,12 @@ async def dr_mandatory(cb: CallbackQuery, state: FSMContext):
     req_id = await db.add_data_request(
         data["title"], data["dtype"], data.get("dep_id"), data.get("deadline"), mandatory)
     await state.clear()
-
-    req = await db.get_data_request(req_id)
-    eligible = await db.eligible_linked_for_request(req)
-    dl = f"\n📅 Muddat: {req['deadline']}" if req["deadline"] else ""
     mm = "🔴 Majburiy" if mandatory else "🟢 Ixtiyoriy"
-    tmap = {"text": "matn", "photo": "rasm", "file": "fayl"}
-    note = (f"📋 Yangi ma'lumot talabi: {req['title']}\n"
-            f"Turi: {tmap.get(req['dtype'])}\n{mm}{dl}\n\n"
-            f"To'ldirish uchun «📋 To'ldirish» tugmasini bosing.")
-    sent = 0
-    for e in eligible:
-        try:
-            await cb.bot.send_message(e["telegram_id"], note, reply_markup=kb.pending_reqs_kb([{
-                "id": req["id"], "title": req["title"], "mandatory": req["mandatory"]}]))
-            sent += 1
-        except Exception:
-            pass
+    dl = f"\n📅 Muddat: {data.get('deadline')}" if data.get("deadline") else ""
     await cb.message.answer(
-        f"✅ Talab qo'shildi va {sent} ta xodimga yuborildi.", reply_markup=kb.admin_menu())
+        f"✅ Talab qo'shildi: {data['title']}\n{mm}{dl}\n\n"
+        "Xodimlarga hozir xabar yuborilmadi. Ular «🔔 Eslatma» orqali "
+        "ogohlantirilganda to'ldirish so'raladi.", reply_markup=kb.admin_menu())
     await cb.answer()
 
 
