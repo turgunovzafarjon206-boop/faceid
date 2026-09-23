@@ -172,6 +172,10 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT, survey_id INTEGER NOT NULL,
                 question_id INTEGER NOT NULL, option_id INTEGER NOT NULL, employee_id INTEGER NOT NULL,
                 answered_at TEXT, UNIQUE(question_id, employee_id));
+            CREATE TABLE IF NOT EXISTS lesson_times (
+                sched_name TEXT NOT NULL, day TEXT NOT NULL, start_min INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS sched_alias (
+                sched_name TEXT PRIMARY KEY, employee_id INTEGER NOT NULL);
             """
         )
         await db.commit()
@@ -870,4 +874,107 @@ async def incomplete_report():
         pending = await pending_requests_for(emp)
         if pending:
             out.append({"emp": emp, "missing": [p["title"] for p in pending]})
+    return out
+
+
+# ==================== Dars jadvali (HolliHop) ====================
+def _sched_parse(name):
+    """'Tolipova N.' -> (['tolipova'], 'n'); 'Y.U H.' -> (['y.u'], 'h')."""
+    toks = [t for t in str(name).replace("\n", " ").split() if t]
+    if not toks:
+        return [], None
+    last = toks[-1].strip(".")
+    if len(last) == 1 and len(toks) > 1:
+        return [t.lower().strip(".") for t in toks[:-1]], last.lower()
+    return [t.lower().strip(".") for t in toks], None
+
+
+def _emp_tokens(emp):
+    return [t.lower().strip(".") for t in full_name(emp).split() if t]
+
+
+def _auto_match(sched_name, emps):
+    surn, init = _sched_parse(sched_name)
+    if not surn:
+        return None
+    for emp in emps:
+        et = _emp_tokens(emp)
+        if all(s in et for s in surn):
+            if init is None or any(t.startswith(init) for t in et):
+                return emp
+    return None
+
+
+async def import_schedule(entries):
+    """entries: [(sched_name, day, start_min), ...] — eski jadvalni almashtiradi (aliaslar qoladi)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS lesson_times (sched_name TEXT, day TEXT, start_min INTEGER)")
+        await db.execute("DELETE FROM lesson_times")
+        await db.executemany(
+            "INSERT INTO lesson_times(sched_name,day,start_min) VALUES(?,?,?)", entries)
+        await db.commit()
+
+
+async def schedule_teacher_names():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT DISTINCT sched_name FROM lesson_times")
+        return [r[0] for r in await cur.fetchall()]
+
+
+async def add_alias(sched_name, employee_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO sched_alias(sched_name,employee_id) VALUES(?,?)",
+            (sched_name, int(employee_id)))
+        await db.commit()
+
+
+async def _alias_map():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT sched_name, employee_id FROM sched_alias")
+        return {r[0]: r[1] for r in await cur.fetchall()}
+
+
+async def schedule_name_for_employee(emp):
+    """Xodimga mos dars-jadval nomini topadi (alias yoki avto familiya+harf)."""
+    names = await schedule_teacher_names()
+    if not names:
+        return None
+    aliases = await _alias_map()
+    for sn, eid in aliases.items():
+        if eid == emp["id"] and sn in names:
+            return sn
+    # avto moslik
+    surn_e = _emp_tokens(emp)
+    for sn in names:
+        surn, init = _sched_parse(sn)
+        if surn and all(s in surn_e for s in surn):
+            if init is None or any(t.startswith(init) for t in surn_e):
+                return sn
+    return None
+
+
+async def lesson_start_min(sched_name, day):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT MIN(start_min) FROM lesson_times WHERE sched_name=? AND day=?", (sched_name, day))
+        r = await cur.fetchone()
+        return r[0] if r and r[0] is not None else None
+
+
+async def unmatched_schedule_names():
+    """Botdagi xodimga bog'lanmagan (alias ham, avto ham yo'q) jadval nomlari."""
+    names = await schedule_teacher_names()
+    if not names:
+        return []
+    emps = await list_employees()
+    aliases = await _alias_map()
+    aliased = set(aliases.keys())
+    out = []
+    for sn in names:
+        if sn in aliased:
+            continue
+        if _auto_match(sn, emps) is None:
+            out.append(sn)
     return out

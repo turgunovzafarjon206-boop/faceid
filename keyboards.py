@@ -67,7 +67,6 @@ def user_myinfo_kb():
 
 def user_edit_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Username", callback_data="u:edit:name")],
         [InlineKeyboardButton(text="📞 Telefon", callback_data="u:edit:phone")],
     ])
 
@@ -92,6 +91,8 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
         [InlineKeyboardButton(text="💰 Jarima ko'rinishi (xodimga)", callback_data="a:finetoggle")],
         [InlineKeyboardButton(text="🕐 Ortiqcha ko'rinishi (xodimga)", callback_data="a:overtoggle")],
+        [InlineKeyboardButton(text="📅 Dars jadvali yuklash/yangilash", callback_data="a:schedupload")],
+        [InlineKeyboardButton(text="🔗 Ismlarni biriktirish", callback_data="a:schedbind")],
         [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
         [InlineKeyboardButton(text="🕒 Vaqtni o'zgartirish", callback_data="a:settime")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
@@ -450,4 +451,24 @@ def settime_select_kb(employees):
         rows.append([InlineKeyboardButton(text=f"👤 {nm} ({e['phone']})",
                                           callback_data=f"stemp:{e['id']}")])
     rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="st:search")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def sched_unmatched_kb(names):
+    """Biriktirilmagan jadval nomlari — bosilsa username so'raladi."""
+    import hashlib
+    rows = []
+    for nm in names[:40]:
+        h = hashlib.md5(nm.encode()).hexdigest()[:10]
+        rows.append([InlineKeyboardButton(text=f"🔗 {nm}", callback_data=f"bind:{h}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def bind_pick_kb(employees):
+    rows = []
+    for e in employees:
+        nm = (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(text=f"👤 {nm} ({e['phone']})",
+                                          callback_data=f"bindemp:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="bind:search")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

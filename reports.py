@@ -65,19 +65,42 @@ def fine_rate(streak):
     return 5000
 
 
+async def _apply_schedule(emp, day, r, sched_name):
+    """Ustoz bo'lsa: dars vaqtidan 5 daqiqa oldin kelishi kerak. Dars yo'q kun = dam olish."""
+    r["kerakli_min"] = None
+    if not sched_name:
+        return
+    lesson_min = await db.lesson_start_min(sched_name, day)
+    if lesson_min is None:
+        r["kechikish_min"] = 0
+        r["kech_qoldi"] = False
+    else:
+        need = lesson_min - 5
+        r["kerakli_min"] = need
+        if emp["count_late"] and r["kirish"]:
+            km = r["kirish"].hour * 60 + r["kirish"].minute
+            late = max(0, km - need)
+            r["kechikish_min"] = late
+            r["kech_qoldi"] = late > 0
+        else:
+            r["kechikish_min"] = 0
+            r["kech_qoldi"] = False
+
+
 async def _late_series(emp, day_from, day_to):
-    """Kunlar bo'yicha (day, worked_min, late_min, r) ketma-ketligi (tartibda)."""
+    """Kunlar bo'yicha (day, r, late) ketma-ketligi (tartibda)."""
     rows = await db.events_between(emp["id"], day_from, day_to)
     by_day = {}
     for day, etype, ts in rows:
         by_day.setdefault(day, []).append((etype, ts))
     exempt_days = await db.exempt_days_for(emp["id"])
+    sched_name = await db.schedule_name_for_employee(emp)
     series = []
     for day in sorted(by_day):
         r = compute_day(emp, by_day[day])
         if not r:
             continue
-        # Kechirim: bu kun uchun kechikish hisoblanmasin
+        await _apply_schedule(emp, day, r, sched_name)
         if r["kechikish_min"] and day in exempt_days:
             r["kechikish_min"] = 0
             r["kech_qoldi"] = False
@@ -227,6 +250,9 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
         return head + "\nBu kuni hech qanday qayd yo'q."
     kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
     chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
+    # Dars jadvali (ustozlar) — dars vaqtidan 5 daqiqa oldin
+    sched_name = await db.schedule_name_for_employee(emp)
+    await _apply_schedule(emp, day, r, sched_name)
     # Kechirim
     exempt = r["kechikish_min"] and await db.is_exempt(emp["id"], day)
     if exempt:
@@ -366,8 +392,8 @@ async def build_period_excel(employees, day_from, day_to, title):
         # xodim uchun alohida list
         sheet = wb.create_sheet(_safe_sheet_name(db.full_name(emp), used_names))
         sheet.append([f"👤 {db.full_name(emp)}  |  📞 {emp['phone']}  |  🏢 {await dep_name(emp.get('department_id')) or 'Bo‘limsiz'}"])
-        sheet.append(["Sana", "Hafta kuni", "Kirish", "Chiqish", "Ishlangan vaqt",
-                      "Ortiqcha (daqiqa)", "Kechikish (daqiqa)", "Jarima (so'm)"])
+        sheet.append(["Sana", "Hafta kuni", "Darsga kelish vaqti", "Kirish", "Chiqish",
+                      "Ishlangan vaqt", "Ortiqcha (daqiqa)", "Kechikish (daqiqa)", "Jarima (so'm)"])
 
         over_total = 0
         for day, r, late in series:
@@ -378,9 +404,12 @@ async def build_period_excel(employees, day_from, day_to, title):
             if late > 0:
                 late_days += 1
             fine = info.get(day, (0, 0, 0))[0] if emp["count_late"] else 0
+            need = r.get("kerakli_min")
+            need_str = f"{need // 60:02d}:{need % 60:02d}" if need is not None else "-"
             sheet.append([
                 uz_date(day),
                 uz_weekday(day),
+                need_str,
                 r["kirish"].strftime("%H:%M") if r["kirish"] else "-",
                 r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-",
                 fmt_duration(r["ishlangan_min"]),
@@ -401,7 +430,7 @@ async def build_period_excel(employees, day_from, day_to, title):
         sheet.append(["Jami jarima (so'm)", fine_total if emp["count_late"] else 0])
 
         # sarlavha (2-qator) bezaklari
-        for c in range(1, 9):
+        for c in range(1, 10):
             cell = sheet.cell(row=2, column=c)
             cell.fill = _HEAD_FILL
             cell.font = _HEAD_FONT
@@ -448,6 +477,10 @@ async def notify_text(emp, etype, ts):
     day = ts.strftime("%Y-%m-%d")
     events = await db.events_for_day(emp["id"], day)
     r = compute_day(emp, events) or {}
+    # Dars jadvali (ustozlar)
+    if r:
+        sched_name = await db.schedule_name_for_employee(emp)
+        await _apply_schedule(emp, day, r, sched_name)
     worked = fmt_duration(r.get("ishlangan_min", 0))
     late_min = r.get("kechikish_min", 0)
 

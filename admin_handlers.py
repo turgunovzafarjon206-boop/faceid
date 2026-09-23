@@ -96,6 +96,14 @@ class SetTime(StatesGroup):
     times = State()
 
 
+class SchedUpload(StatesGroup):
+    wait_file = State()
+
+
+class SchedBind(StatesGroup):
+    search = State()
+
+
 def _month_range():
     now = dt.datetime.now(TZ)
     first = now.replace(day=1).strftime("%Y-%m-%d")
@@ -1475,3 +1483,113 @@ async def settime_apply(msg: Message, state: FSMContext):
     await msg.answer(
         f"✅ {data['st_name']} — {data['st_day']}\n" + "  ".join(parts) +
         "\nVaqt yangilandi.", reply_markup=kb.admin_menu())
+
+
+# ==================== Dars jadvali (HolliHop) ====================
+import hashlib as _hashlib
+
+
+@router.callback_query(F.data == "a:schedupload")
+async def sched_upload_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(SchedUpload.wait_file)
+    await cb.message.answer(
+        "📅 Dars jadvali (Excel) faylini yuboring.\n"
+        "HolliHop'dagi «Расписание преподавателей» eksportini yuklang. "
+        "Eski jadval yangisi bilan almashtiriladi (biriktirishlar saqlanadi).")
+    await cb.answer()
+
+
+@router.message(SchedUpload.wait_file, F.document)
+async def sched_upload_file(msg: Message, state: FSMContext):
+    doc = msg.document
+    if not (doc.file_name or "").lower().endswith((".xlsx", ".xls")):
+        await msg.answer("❌ Faqat Excel (.xlsx) fayl yuboring.")
+        return
+    await state.clear()
+    await msg.answer("⏳ O'qilmoqda...")
+    path = f"/tmp/sched_{doc.file_unique_id}.xlsx"
+    await msg.bot.download(doc, destination=path)
+    try:
+        import schedule_import
+        entries, teachers = schedule_import.parse_schedule_file(path)
+        await db.import_schedule(entries)
+    except Exception as e:
+        await msg.answer(f"❌ Faylni o'qishda xatolik: {e}", reply_markup=kb.admin_menu())
+        return
+    unmatched = await db.unmatched_schedule_names()
+    txt = (f"✅ Jadval yuklandi.\n"
+           f"👨‍🏫 Ustozlar: {len(teachers)}, yozuvlar: {len(entries)}\n")
+    if unmatched:
+        txt += (f"\n⚠️ {len(unmatched)} ta ism botdagi username bilan mos kelmadi.\n"
+                "«🔗 Ismlarni biriktirish» orqali ularni qo'lda bog'lang.")
+    else:
+        txt += "\nBarcha ismlar mos keldi ✅"
+    await msg.answer(txt, reply_markup=kb.admin_menu())
+
+
+@router.callback_query(F.data == "a:schedbind")
+async def sched_bind_menu(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    unmatched = await db.unmatched_schedule_names()
+    if not unmatched:
+        await cb.message.answer("✅ Barcha jadval ismlari botdagi xodimlarga bog'langan.")
+        return await cb.answer()
+    # hash -> name xaritasini settingsga saqlaymiz (callback qisqa bo'lishi uchun)
+    import json
+    hmap = {_hashlib.md5(n.encode()).hexdigest()[:10]: n for n in unmatched}
+    await db.set_setting("_bindmap", json.dumps(hmap, ensure_ascii=False))
+    await cb.message.answer(
+        "🔗 Quyidagi ismlar botda topilmadi. Har birini bosib, botdagi xodimni tanlang:",
+        reply_markup=kb.sched_unmatched_kb(unmatched))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("bind:"))
+async def sched_bind_pick(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    part = cb.data.split(":", 1)[1]
+    if part == "search":
+        await cb.message.answer("Xodim ismini (username) qidiring:")
+        await state.set_state(SchedBind.search)
+        return await cb.answer()
+    import json
+    hmap = json.loads(await db.get_setting("_bindmap") or "{}")
+    sched_name = hmap.get(part)
+    if not sched_name:
+        return await cb.answer("Eskirgan, qaytadan oching", show_alert=True)
+    await state.update_data(bind_name=sched_name)
+    await state.set_state(SchedBind.search)
+    await cb.message.answer(f"«{sched_name}» kimga tegishli? Botdagi ismni qidiring:")
+    await cb.answer()
+
+
+@router.message(SchedBind.search, F.text)
+async def sched_bind_search(msg: Message, state: FSMContext):
+    found = await db.search_employees(msg.text.strip(), linked_only=False)
+    if not found:
+        await msg.answer("Topilmadi. Qaytadan qidiring:")
+        return
+    await state.set_state(None)
+    await msg.answer("Tanlang:", reply_markup=kb.bind_pick_kb(found))
+
+
+@router.callback_query(F.data.startswith("bindemp:"))
+async def sched_bind_save(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    data = await state.get_data()
+    sched_name = data.get("bind_name")
+    if not sched_name:
+        return await cb.answer("Avval jadval ismini tanlang", show_alert=True)
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    await db.add_alias(sched_name, emp["id"])
+    await state.clear()
+    await cb.answer("Biriktirildi ✅")
+    await cb.message.answer(
+        f"🔗 «{sched_name}» → {db.full_name(emp)} ga biriktirildi.\n"
+        "Qolganlarini biriktirish uchun «🔗 Ismlarni biriktirish» ni qayta bosing.",
+        reply_markup=kb.admin_menu())

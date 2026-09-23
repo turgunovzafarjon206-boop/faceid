@@ -71,13 +71,14 @@ async def main():
     @dp.error()
     async def on_error(event: ErrorEvent):
         log.exception("Handler xatosi: %s", event.exception)
+        err = str(event.exception)[:300]
         try:
             upd = event.update
             if upd.callback_query:
-                await upd.callback_query.answer("Xatolik yuz berdi ❌", show_alert=True)
-                await upd.callback_query.message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+                await upd.callback_query.answer("Xatolik ❌", show_alert=True)
+                await upd.callback_query.message.answer(f"❌ Xatolik:\n{err}")
             elif upd.message:
-                await upd.message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.")
+                await upd.message.answer(f"❌ Xatolik:\n{err}")
         except Exception:
             pass
         return True
