@@ -540,6 +540,14 @@ def _emp_matches_dep(emp, dep_id):
 
 async def add_data_request(title, dtype, dep_id, deadline, mandatory):
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.executescript(
+            """CREATE TABLE IF NOT EXISTS data_requests (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, dtype TEXT NOT NULL,
+                   dep_id INTEGER, deadline TEXT, mandatory INTEGER DEFAULT 0, created_at TEXT);
+               CREATE TABLE IF NOT EXISTS data_submissions (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL,
+                   employee_id INTEGER NOT NULL, content TEXT, kind TEXT, submitted_at TEXT,
+                   UNIQUE(request_id, employee_id));""")
         cur = await db.execute(
             "INSERT INTO data_requests(title,dtype,dep_id,deadline,mandatory,created_at) "
             "VALUES(?,?,?,?,?,?)",
@@ -559,16 +567,19 @@ async def get_data_request(req_id):
 
 
 async def list_data_requests():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """SELECT r.id,r.title,r.dtype,r.dep_id,r.deadline,r.mandatory,
-                      (SELECT COUNT(*) FROM data_submissions s WHERE s.request_id=r.id)
-               FROM data_requests r ORDER BY r.id DESC""")
-        out = []
-        for r in await cur.fetchall():
-            out.append({"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
-                        "deadline": r[4], "mandatory": r[5], "subs": r[6]})
-        return out
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """SELECT r.id,r.title,r.dtype,r.dep_id,r.deadline,r.mandatory,
+                          (SELECT COUNT(*) FROM data_submissions s WHERE s.request_id=r.id)
+                   FROM data_requests r ORDER BY r.id DESC""")
+            out = []
+            for r in await cur.fetchall():
+                out.append({"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
+                            "deadline": r[4], "mandatory": r[5], "subs": r[6]})
+            return out
+    except Exception:
+        return []
 
 
 async def delete_data_request(req_id):
@@ -600,11 +611,14 @@ async def request_submissions(request_id):
 
 async def pending_requests_for(emp):
     """Xodimga tegishli (dep mos), hali topshirilmagan talablar."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id,title,dtype,dep_id,deadline,mandatory FROM data_requests")
-        reqs = await cur.fetchall()
-        cur2 = await db.execute("SELECT request_id FROM data_submissions WHERE employee_id=?", (emp["id"],))
-        done = {r[0] for r in await cur2.fetchall()}
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT id,title,dtype,dep_id,deadline,mandatory FROM data_requests")
+            reqs = await cur.fetchall()
+            cur2 = await db.execute("SELECT request_id FROM data_submissions WHERE employee_id=?", (emp["id"],))
+            done = {r[0] for r in await cur2.fetchall()}
+    except Exception:
+        return []
     out = []
     for r in reqs:
         req = {"id": r[0], "title": r[1], "dtype": r[2], "dep_id": r[3],
@@ -908,8 +922,9 @@ def _auto_match(sched_name, emps):
 async def import_schedule(entries):
     """entries: [(sched_name, day, start_min), ...] — eski jadvalni almashtiradi (aliaslar qoladi)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS lesson_times (sched_name TEXT, day TEXT, start_min INTEGER)")
+        await db.executescript(
+            """CREATE TABLE IF NOT EXISTS lesson_times (sched_name TEXT, day TEXT, start_min INTEGER);
+               CREATE TABLE IF NOT EXISTS sched_alias (sched_name TEXT PRIMARY KEY, employee_id INTEGER);""")
         await db.execute("DELETE FROM lesson_times")
         await db.executemany(
             "INSERT INTO lesson_times(sched_name,day,start_min) VALUES(?,?,?)", entries)
@@ -917,13 +932,18 @@ async def import_schedule(entries):
 
 
 async def schedule_teacher_names():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT DISTINCT sched_name FROM lesson_times")
-        return [r[0] for r in await cur.fetchall()]
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT DISTINCT sched_name FROM lesson_times")
+            return [r[0] for r in await cur.fetchall()]
+    except Exception:
+        return []
 
 
 async def add_alias(sched_name, employee_id):
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS sched_alias (sched_name TEXT PRIMARY KEY, employee_id INTEGER)")
         await db.execute(
             "INSERT OR REPLACE INTO sched_alias(sched_name,employee_id) VALUES(?,?)",
             (sched_name, int(employee_id)))
@@ -931,9 +951,12 @@ async def add_alias(sched_name, employee_id):
 
 
 async def _alias_map():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT sched_name, employee_id FROM sched_alias")
-        return {r[0]: r[1] for r in await cur.fetchall()}
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT sched_name, employee_id FROM sched_alias")
+            return {r[0]: r[1] for r in await cur.fetchall()}
+    except Exception:
+        return {}
 
 
 async def schedule_name_for_employee(emp):
@@ -956,11 +979,14 @@ async def schedule_name_for_employee(emp):
 
 
 async def lesson_start_min(sched_name, day):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "SELECT MIN(start_min) FROM lesson_times WHERE sched_name=? AND day=?", (sched_name, day))
-        r = await cur.fetchone()
-        return r[0] if r and r[0] is not None else None
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT MIN(start_min) FROM lesson_times WHERE sched_name=? AND day=?", (sched_name, day))
+            r = await cur.fetchone()
+            return r[0] if r and r[0] is not None else None
+    except Exception:
+        return None
 
 
 async def unmatched_schedule_names():
