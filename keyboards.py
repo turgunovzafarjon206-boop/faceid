@@ -209,6 +209,8 @@ def admin_data_kb():
         [InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")],
         [InlineKeyboardButton(text="👥 Xodimlar ro'yxati", callback_data="a:listemp")],
         [InlineKeyboardButton(text="🗂 Xodim ma'lumoti", callback_data="a:empdata")],
+        [InlineKeyboardButton(text="⬇️ Xodimlar ma'lumoti (Excel)", callback_data="a:empexcel")],
+        [InlineKeyboardButton(text="🔍 Guruhda bor, bazada yo'q (Topish)", callback_data="a:findunk")],
         [InlineKeyboardButton(text="📋 To'liq to'ldirmaganlar", callback_data="ed:incomplete")],
         [InlineKeyboardButton(text="👑 Adminlar", callback_data="a:admins")],
         [InlineKeyboardButton(text="💾 Zaxira nusxa", callback_data="a:backup"),
@@ -428,7 +430,8 @@ def survey_options_kb(survey_id, q):
 # ==================== Kechikishni hisoblamaslik ====================
 def exempt_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Qo'shish (sana + xodimlar)", callback_data="ex:add")],
+        [InlineKeyboardButton(text="📅 Kun uchun (butun kun hisoblanmaydi)", callback_data="ex:add")],
+        [InlineKeyboardButton(text="🕒 Vaqt uchun (shu vaqtdan boshlab hisoblanadi)", callback_data="ex:addtime")],
         [InlineKeyboardButton(text="📋 Ro'yxat", callback_data="ex:list")],
     ])
 
@@ -449,8 +452,10 @@ def exemptions_list_kb(items):
     rows = []
     for it in items[:40]:
         nm = (str(it['first_name'] or '') + ' ' + str(it['last_name'] or '')).strip()
+        fm = it.get("from_min")
+        tag = "kun" if fm is None else f"{fm // 60:02d}:{fm % 60:02d} dan"
         rows.append([InlineKeyboardButton(
-            text=f"🗑 {it['day']} — {nm}", callback_data=f"exdel:{it['emp_id']}:{it['day']}")])
+            text=f"🗑 {it['day']} — {nm} ({tag})", callback_data=f"exdel:{it['emp_id']}:{it['day']}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -482,4 +487,16 @@ def bind_pick_kb(employees):
         rows.append([InlineKeyboardButton(text=f"👤 {nm} ({e['phone']})",
                                           callback_data=f"bindemp:{e['id']}")])
     rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="bind:search")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def unknown_kb(items):
+    """Guruhda bor, bazada yo'q ismlar — bosilsa xodim qo'shish boshlanadi."""
+    import hashlib
+    rows = []
+    for it in items[:40]:
+        h = hashlib.md5(it["name"].encode()).hexdigest()[:10]
+        rows.append([InlineKeyboardButton(
+            text=f"➕ {it['name']} ({it['cnt']} marta)", callback_data=f"unk:{h}")])
+    rows.append([InlineKeyboardButton(text="🔄 Guruh tarixini qayta o'qish", callback_data="unk:refresh")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

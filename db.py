@@ -178,6 +178,11 @@ async def init_db():
                 sched_name TEXT PRIMARY KEY, employee_id INTEGER NOT NULL);
             """
         )
+        # late_exemptions: from_min ustuni (NULL = butun kun, son = shu vaqtdan boshlab hisoblanadi)
+        cur = await db.execute("PRAGMA table_info(late_exemptions)")
+        _ecols = [r[1] for r in await cur.fetchall()]
+        if "from_min" not in _ecols:
+            await db.execute("ALTER TABLE late_exemptions ADD COLUMN from_min INTEGER")
         await db.commit()
 
 
@@ -802,16 +807,27 @@ async def search_employees(query, linked_only=True):
 
 
 # ==================== Kechikishni hisoblamaslik (kechirim) ====================
-async def add_exemptions(emp_ids, day):
+async def _ensure_exempt_table(db):
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS late_exemptions (
+               employee_id INTEGER NOT NULL, day TEXT NOT NULL,
+               created_at TEXT, UNIQUE(employee_id, day))""")
+    cur = await db.execute("PRAGMA table_info(late_exemptions)")
+    cols = [r[1] for r in await cur.fetchall()]
+    if "from_min" not in cols:
+        await db.execute("ALTER TABLE late_exemptions ADD COLUMN from_min INTEGER")
+
+
+async def add_exemptions(emp_ids, day, from_min=None):
+    """from_min=None -> butun kun uchun kechikish hisoblanmaydi.
+    from_min=<daqiqa> -> shu vaqtdan boshlab kechikish hisoblanadi (masalan 9:30 -> 570)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS late_exemptions (
-                   employee_id INTEGER NOT NULL, day TEXT NOT NULL,
-                   created_at TEXT, UNIQUE(employee_id, day))""")
+        await _ensure_exempt_table(db)
         for eid in emp_ids:
             await db.execute(
-                "INSERT OR IGNORE INTO late_exemptions(employee_id,day,created_at) VALUES(?,?,?)",
-                (int(eid), day, now_local().isoformat()))
+                "INSERT OR REPLACE INTO late_exemptions(employee_id,day,created_at,from_min) "
+                "VALUES(?,?,?,?)",
+                (int(eid), day, now_local().isoformat(), from_min))
         await db.commit()
 
 
@@ -825,25 +841,33 @@ async def is_exempt(emp_id, day):
         return False
 
 
-async def exempt_days_for(emp_id):
-    """Xodimning barcha kechirilgan kunlari (bitta so'rovda)."""
+async def exempt_map_for(emp_id):
+    """Xodimning kechirimlari: {day: from_min yoki None} (bitta so'rovda)."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
-                "SELECT day FROM late_exemptions WHERE employee_id=?", (emp_id,))
-            return {r[0] for r in await cur.fetchall()}
+                "SELECT day, from_min FROM late_exemptions WHERE employee_id=?", (emp_id,))
+            return {r[0]: r[1] for r in await cur.fetchall()}
     except Exception:
-        return set()
+        return {}
+
+
+async def exempt_days_for(emp_id):
+    """Xodimning kechirilgan kunlari (moslik uchun)."""
+    return set((await exempt_map_for(emp_id)).keys())
 
 
 async def list_exemptions():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """SELECT x.employee_id, x.day, e.first_name, e.last_name
-               FROM late_exemptions x JOIN employees e ON e.id=x.employee_id
-               ORDER BY x.day DESC, e.first_name""")
-        return [{"emp_id": r[0], "day": r[1], "first_name": r[2], "last_name": r[3]}
-                for r in await cur.fetchall()]
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """SELECT x.employee_id, x.day, e.first_name, e.last_name, x.from_min
+                   FROM late_exemptions x JOIN employees e ON e.id=x.employee_id
+                   ORDER BY x.day DESC, e.first_name""")
+            return [{"emp_id": r[0], "day": r[1], "first_name": r[2],
+                     "last_name": r[3], "from_min": r[4]} for r in await cur.fetchall()]
+    except Exception:
+        return []
 
 
 async def remove_exemption(emp_id, day):
@@ -1037,3 +1061,24 @@ async def requests_for_employee(emp):
             req["submitted"] = req["id"] in done
             out.append(req)
     return out
+
+
+async def unknown_pending():
+    """Guruhda ko'rilgan, lekin bazada hali yo'q ismlar. Endi bazada bor bo'lganlar avtomatik tozalanadi."""
+    items = await list_unknown()
+    pending = []
+    to_delete = []
+    for it in items:
+        if await get_employee_by_name(it["name"]):
+            to_delete.append(it["name"])
+        else:
+            pending.append(it)
+    if to_delete:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.executemany("DELETE FROM unknown_names WHERE name=?",
+                                     [(n,) for n in to_delete])
+                await db.commit()
+        except Exception:
+            pass
+    return pending

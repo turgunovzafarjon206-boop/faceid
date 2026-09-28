@@ -74,6 +74,7 @@ async def _apply_schedule(emp, day, r, sched_name):
     if lesson_min is None:
         r["kechikish_min"] = 0
         r["kech_qoldi"] = False
+        r["dam_olish"] = True   # dars yo'q kun — vaqt kechirimi ham hisoblamaydi
     else:
         need = lesson_min - 5
         r["kerakli_min"] = need
@@ -87,13 +88,38 @@ async def _apply_schedule(emp, day, r, sched_name):
             r["kech_qoldi"] = False
 
 
+def _apply_exemption(emp, day, r, exempt_map):
+    """Kechirim qo'llaydi. Qaytaradi: None | ('day', None) | ('time', from_min).
+    'day'  -> butun kun uchun kechikish hisoblanmaydi.
+    'time' -> kechikish admin kiritgan vaqtdan boshlab hisoblanadi."""
+    if day not in exempt_map:
+        return None
+    from_min = exempt_map[day]
+    if from_min is None:
+        r["kechikish_min"] = 0
+        r["kech_qoldi"] = False
+        return ("day", None)
+    # vaqt bo'yicha
+    if r.get("dam_olish") or not emp["count_late"] or not r.get("kirish"):
+        r["kechikish_min"] = 0
+        r["kech_qoldi"] = False
+    else:
+        km = r["kirish"].hour * 60 + r["kirish"].minute
+        late = max(0, km - from_min)
+        r["kechikish_min"] = late
+        r["kech_qoldi"] = late > 0
+        if r.get("kerakli_min") is not None:
+            r["kerakli_min"] = from_min
+    return ("time", from_min)
+
+
 async def _late_series(emp, day_from, day_to):
     """Kunlar bo'yicha (day, r, late) ketma-ketligi (tartibda)."""
     rows = await db.events_between(emp["id"], day_from, day_to)
     by_day = {}
     for day, etype, ts in rows:
         by_day.setdefault(day, []).append((etype, ts))
-    exempt_days = await db.exempt_days_for(emp["id"])
+    exempt_map = await db.exempt_map_for(emp["id"])
     sched_name = await db.schedule_name_for_employee(emp)
     series = []
     for day in sorted(by_day):
@@ -101,9 +127,7 @@ async def _late_series(emp, day_from, day_to):
         if not r:
             continue
         await _apply_schedule(emp, day, r, sched_name)
-        if r["kechikish_min"] and day in exempt_days:
-            r["kechikish_min"] = 0
-            r["kech_qoldi"] = False
+        _apply_exemption(emp, day, r, exempt_map)
         late = r["kechikish_min"] if emp["count_late"] else 0
         series.append((day, r, late))
     return series
@@ -253,16 +277,18 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
     # Dars jadvali (ustozlar) — dars vaqtidan 5 daqiqa oldin
     sched_name = await db.schedule_name_for_employee(emp)
     await _apply_schedule(emp, day, r, sched_name)
-    # Kechirim
-    exempt = r["kechikish_min"] and await db.is_exempt(emp["id"], day)
-    if exempt:
-        r["kechikish_min"] = 0
-        r["kech_qoldi"] = False
+    # Kechirim (kun yoki vaqt bo'yicha)
+    had_late = r["kechikish_min"] > 0
+    exempt_map = await db.exempt_map_for(emp["id"])
+    ex = _apply_exemption(emp, day, r, exempt_map)
     txt = head + (f"\n🟢 Kirish: {kirish}\n🔴 Chiqish: {chiqish}")
     if emp["count_late"]:
         if r["kechikish_min"] > 0:
-            txt += f"\n❗️Kech qolish: {r['kechikish_min']} daqiqa"
-        elif exempt:
+            note = ""
+            if ex and ex[0] == "time":
+                note = f" (hisob {ex[1] // 60:02d}:{ex[1] % 60:02d} dan)"
+            txt += f"\n❗️Kech qolish: {r['kechikish_min']} daqiqa{note}"
+        elif ex and ex[0] == "day" and had_late:
             txt += "\n⏰ Kech qolish: hisobga olinmadi (kechirim) ✅"
         else:
             txt += "\n⏰ Kech qolish: yo'q ✅"
@@ -481,6 +507,7 @@ async def notify_text(emp, etype, ts):
     if r:
         sched_name = await db.schedule_name_for_employee(emp)
         await _apply_schedule(emp, day, r, sched_name)
+        _apply_exemption(emp, day, r, await db.exempt_map_for(emp["id"]))
     worked = fmt_duration(r.get("ishlangan_min", 0))
     late_min = r.get("kechikish_min", 0)
 
@@ -509,3 +536,78 @@ async def notify_text(emp, etype, ts):
         late=late,
         late_min=late_min,
     )
+
+
+# ==================== XODIMLAR MA'LUMOTI (Excel eksport) ====================
+async def build_employees_excel():
+    """Barcha xodimlar: username, telefon, bo'lim, grafik, ulanish + har bir ma'lumot talabi bo'yicha holat.
+    2-varaq: to'liq to'ldirmaganlar. Fayl yo'lini qaytaradi."""
+    emps = await db.list_employees()          # alifbo tartibida
+    reqs = sorted(await db.list_data_requests(), key=lambda r: r["id"])
+
+    dep_cache = {}
+
+    async def dep_name(dep_id):
+        if not dep_id:
+            return "Bo'limsiz"
+        if dep_id not in dep_cache:
+            d = await db.get_department(dep_id)
+            dep_cache[dep_id] = d["name"] if d else "Bo'limsiz"
+        return dep_cache[dep_id]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Xodimlar"
+    headers = ["№", "Username", "Telefon", "Bo'lim", "Ish grafigi",
+               "Kechikish", "Telegram"] + [r["title"] for r in reqs]
+    ws.append(headers)
+
+    connected = 0
+    for i, emp in enumerate(emps, 1):
+        subs = {s["req_id"]: s for s in await db.employee_submissions(emp["id"])}
+        if emp["telegram_id"]:
+            connected += 1
+        row = [
+            i, db.full_name(emp), emp["phone"], await dep_name(emp.get("department_id")),
+            f"{emp['work_start']}-{emp['work_end']}",
+            "hisoblanadi" if emp["count_late"] else "hisoblanmaydi",
+            "🟢 ulangan" if emp["telegram_id"] else "🔴 ulanmagan",
+        ]
+        for rq in reqs:
+            if not db._emp_matches_dep(emp, rq["dep_id"]):
+                row.append("—")            # bu xodimga talab qilinmaydi
+                continue
+            s = subs.get(rq["id"])
+            if not s:
+                row.append("❌ to'ldirilmagan")
+            elif s["kind"] == "text":
+                row.append(s["content"])
+            elif s["kind"] == "photo":
+                row.append("✅ rasm yuborilgan")
+            else:
+                row.append("✅ fayl yuborilgan")
+        ws.append(row)
+
+    _style_header(ws, len(headers))
+    _autosize(ws)
+    ws.freeze_panes = "C2"
+
+    # jami qatori
+    ws.append([])
+    ws.append(["", f"Jami: {len(emps)} ta xodim", "", "", "", "",
+               f"Ulangan: {connected}, ulanmagan: {len(emps) - connected}"])
+
+    # 2-varaq: to'liq to'ldirmaganlar
+    ws2 = wb.create_sheet("To'ldirmaganlar")
+    ws2.append(["Username", "Telefon", "Bo'lim", "Yetishmayotgan ma'lumotlar"])
+    for item in await db.incomplete_report():
+        e = item["emp"]
+        ws2.append([db.full_name(e), e["phone"], await dep_name(e.get("department_id")),
+                    ", ".join(item["missing"])])
+    _style_header(ws2, 4)
+    _autosize(ws2)
+
+    today = dt.datetime.now().strftime("%Y-%m-%d")
+    path = f"/tmp/Xodimlar_malumoti_{today}.xlsx"
+    wb.save(path)
+    return path

@@ -87,6 +87,7 @@ class RestoreState(StatesGroup):
 
 class Exempt(StatesGroup):
     date = State()
+    time = State()
     search = State()
 
 
@@ -987,7 +988,7 @@ async def rem_list(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
     unlinked = await db.unlinked_employees()
-    unknown = await db.list_unknown()
+    unknown = await db.unknown_pending()
     lines = ["📋 Ma'lumot to'ldirmaganlar:\n"]
     lines.append(f"⛔ Botga ulanmagan xodimlar ({len(unlinked)}):")
     for e in unlinked[:50]:
@@ -1291,8 +1292,10 @@ async def exempt_menu(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
     await cb.message.answer(
-        "🚫 Kechikishni hisoblamaslik.\n"
-        "Tanlangan xodimlar uchun tanlangan kunda kech qolish (va jarima) hisoblanmaydi.",
+        "🚫 Kechikishni hisoblamaslik.\n\n"
+        "📅 Kun uchun — tanlangan kunda butun kun kechikish (va jarima) hisoblanmaydi.\n"
+        "🕒 Vaqt uchun — siz kiritgan vaqtdan boshlab kechikish hisoblanadi "
+        "(masalan 09:30 kiritsangiz, 09:30 dan keyin kelganlar shundan hisoblab kech qoladi).",
         reply_markup=kb.exempt_menu_kb())
     await cb.answer()
 
@@ -1302,8 +1305,18 @@ async def exempt_add(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
     await state.set_state(Exempt.date)
-    await state.update_data(ex_selected=[])
-    await cb.message.answer("Sana kiriting (YYYY-MM-DD, masalan 2026-09-06):")
+    await state.update_data(ex_selected=[], ex_found=[], ex_mode="day", ex_from=None)
+    await cb.message.answer("📅 Kun uchun. Sana kiriting (YYYY-MM-DD, masalan 2026-09-06):")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "ex:addtime")
+async def exempt_add_time(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(Exempt.date)
+    await state.update_data(ex_selected=[], ex_found=[], ex_mode="time", ex_from=None)
+    await cb.message.answer("🕒 Vaqt uchun. Sana kiriting (YYYY-MM-DD, masalan 2026-09-06):")
     await cb.answer()
 
 
@@ -1314,9 +1327,34 @@ async def exempt_date(msg: Message, state: FSMContext):
     except ValueError:
         await msg.answer("❌ Noto'g'ri format. Masalan: 2026-09-06")
         return
+    data = await state.get_data()
     await state.update_data(ex_day=day)
+    if data.get("ex_mode") == "time":
+        await state.set_state(Exempt.time)
+        await msg.answer(f"📅 Sana: {day}\n"
+                         "Vaqtni kiriting (HH:MM). Shu vaqtdan boshlab kechikish hisoblanadi.\n"
+                         "Masalan: 09:30")
+        return
     await state.set_state(Exempt.search)
     await msg.answer(f"📅 Sana: {day}\nEndi xodim ismini (username) qidiring:")
+
+
+@router.message(Exempt.time, F.text)
+async def exempt_time(msg: Message, state: FSMContext):
+    txt = msg.text.strip().replace(".", ":")
+    try:
+        t = dt.datetime.strptime(txt, "%H:%M")
+    except ValueError:
+        try:
+            t = dt.datetime.strptime(txt, "%H")
+        except ValueError:
+            await msg.answer("❌ Noto'g'ri format. Masalan: 09:30")
+            return
+    from_min = t.hour * 60 + t.minute
+    await state.update_data(ex_from=from_min)
+    await state.set_state(Exempt.search)
+    await msg.answer(f"🕒 {t.strftime('%H:%M')} dan boshlab hisoblanadi.\n"
+                     "Endi xodim ismini (username) qidiring:")
 
 
 @router.callback_query(F.data == "ex:search")
@@ -1386,17 +1424,22 @@ async def exempt_save(cb: CallbackQuery, state: FSMContext):
     selected = data.get("ex_selected", [])
     if not day or not selected:
         return await cb.answer("Hech kim belgilanmagan", show_alert=True)
+    mode = data.get("ex_mode", "day")
+    from_min = data.get("ex_from") if mode == "time" else None
     try:
-        await db.add_exemptions(selected, day)
+        await db.add_exemptions(selected, day, from_min)
     except Exception as e:
         await cb.answer()
         await cb.message.answer(f"❌ Xatolik: {e}", reply_markup=kb.admin_menu())
         return
     await state.clear()
     await cb.answer("Saqlandi ✅")
-    await cb.message.answer(
-        f"✅ {len(selected)} ta xodim uchun {day} kuni kechikish hisoblanmaydi.",
-        reply_markup=kb.admin_menu())
+    if from_min is None:
+        text = f"✅ {len(selected)} ta xodim uchun {day} kuni kechikish hisoblanmaydi."
+    else:
+        text = (f"✅ {len(selected)} ta xodim uchun {day} kuni kechikish "
+                f"{from_min // 60:02d}:{from_min % 60:02d} dan boshlab hisoblanadi.")
+    await cb.message.answer(text, reply_markup=kb.admin_menu())
 
 
 @router.callback_query(F.data == "ex:list")
@@ -1631,3 +1674,82 @@ async def sched_bind_save(cb: CallbackQuery, state: FSMContext):
         f"🔗 «{sched_name}» → {db.full_name(emp)} ga biriktirildi.\n"
         "Qolganlarini biriktirish uchun «🔗 Ismlarni biriktirish» ni qayta bosing.",
         reply_markup=kb.admin_menu())
+
+
+# ==================== Xodimlar ma'lumotini Excel'da yuklab olish ====================
+@router.callback_query(F.data == "a:empexcel")
+async def emp_excel(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await cb.answer("Tayyorlanmoqda...")
+    try:
+        path = await reports.build_employees_excel()
+    except Exception as e:
+        await cb.message.answer(f"❌ Fayl tayyorlashda xatolik: {e}")
+        return
+    await cb.message.answer_document(
+        FSInputFile(path, filename=path.split("/")[-1]),
+        caption="⬇️ Xodimlar ma'lumoti: username, telefon, bo'lim, grafik, ulanish holati "
+                "va har bir ma'lumot talabi bo'yicha to'ldirilganlik.\n"
+                "2-varaqda to'liq to'ldirmaganlar ro'yxati.")
+
+
+# ==================== Topish: guruhda bor, bazada yo'q ====================
+async def _show_unknown(message):
+    items = await db.unknown_pending()
+    if not items:
+        await message.answer(
+            "✅ Guruhda ko'rilgan barcha ismlar bazada bor.\n"
+            "Yangi ismlarni topish uchun guruh tarixini qayta o'qing:",
+            reply_markup=kb.unknown_kb([]))
+        return
+    import json
+    hmap = {_hashlib.md5(it["name"].encode()).hexdigest()[:10]: it["name"] for it in items}
+    await db.set_setting("_unkmap", json.dumps(hmap, ensure_ascii=False))
+    await message.answer(
+        f"🔍 Guruhda bor, lekin botda yo'q: {len(items)} ta.\n"
+        "Xodim sifatida qo'shish uchun ismni bosing (username avtomatik yoziladi):",
+        reply_markup=kb.unknown_kb(items))
+
+
+@router.callback_query(F.data == "a:findunk")
+async def find_unknown(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await _show_unknown(cb.message)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "unk:refresh")
+async def unknown_refresh(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await cb.answer("O'qilmoqda...")
+    await cb.message.answer("🔄 Guruh tarixi o'qilmoqda (bir-ikki daqiqa olishi mumkin)...")
+    import userbot
+    count, info = await userbot.backfill(limit=5000)
+    if info != "ok":
+        await cb.message.answer(f"⚠️ O'qib bo'lmadi: {info}\n"
+                                "(Guruhga kamida bitta qurilma xabari kelgach qayta urinib ko'ring.)")
+    await _show_unknown(cb.message)
+
+
+@router.callback_query(F.data.startswith("unk:"))
+async def unknown_pick(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    h = cb.data.split(":", 1)[1]
+    if h == "refresh":
+        return  # yuqoridagi handler ishlaydi
+    import json
+    hmap = json.loads(await db.get_setting("_unkmap") or "{}")
+    name = hmap.get(h)
+    if not name:
+        return await cb.answer("Ro'yxat eskirgan, qaytadan oching", show_alert=True)
+    await state.clear()
+    await state.update_data(username=name)
+    await state.set_state(AddEmp.phone)
+    await cb.message.answer(
+        f"➕ Yangi xodim: {name}\nUsername avtomatik yozildi.\n\n"
+        "Telefon raqamini kiriting (masalan 901234567):")
+    await cb.answer()
