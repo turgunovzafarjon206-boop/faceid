@@ -395,7 +395,7 @@ async def build_period_excel(employees, day_from, day_to, title):
     wb = Workbook()
     ws = wb.active
     ws.title = "Umumiy"
-    ws.append(["Xodim", "Telefon", "Bo'lim", "Ishlagan kun", "Ishlangan vaqt",
+    ws.append(["Xodim", "Telefon", "Bo'lim", "Filial", "Ishlagan kun", "Ishlangan vaqt",
                "Soat (jami)", "Ortiqcha", "Kech qolgan kun", "Kech qolish (daqiqa)", "Jarima (so'm)"])
 
     used_names = {"umumiy"}
@@ -410,6 +410,16 @@ async def build_period_excel(employees, day_from, day_to, title):
             dep_cache[dep_id] = d["name"] if d else ""
         return dep_cache[dep_id]
 
+    br_cache = {}
+
+    async def br_name(branch_id):
+        if not branch_id:
+            return ""
+        if branch_id not in br_cache:
+            b = await db.get_branch(branch_id)
+            br_cache[branch_id] = b["name"] if b else ""
+        return br_cache[branch_id]
+
     for emp in employees:
         series = await _late_series(emp, day_from, day_to)
         info, fine_total = _apply_fines(series)
@@ -417,7 +427,9 @@ async def build_period_excel(employees, day_from, day_to, title):
 
         # xodim uchun alohida list
         sheet = wb.create_sheet(_safe_sheet_name(db.full_name(emp), used_names))
-        sheet.append([f"👤 {db.full_name(emp)}  |  📞 {emp['phone']}  |  🏢 {await dep_name(emp.get('department_id')) or 'Bo‘limsiz'}"])
+        _dep = await dep_name(emp.get('department_id')) or "Bo'limsiz"
+        _br = await br_name(emp.get('branch_id')) or "Filialsiz"
+        sheet.append([f"👤 {db.full_name(emp)}  |  📞 {emp['phone']}  |  🏢 {_dep}  |  🏬 {_br}"])
         sheet.append(["Sana", "Hafta kuni", "Darsga kelish vaqti", "Kirish", "Chiqish",
                       "Ishlangan vaqt", "Ortiqcha (daqiqa)", "Kechikish (daqiqa)", "Jarima (so'm)"])
 
@@ -466,12 +478,13 @@ async def build_period_excel(employees, day_from, day_to, title):
         # umumiy varaqqa qator
         ws.append([
             db.full_name(emp), emp["phone"], await dep_name(emp.get("department_id")),
+            await br_name(emp.get("branch_id")),
             worked_days, fmt_duration(worked_total), round(worked_total / 60, 1),
             fmt_duration(over_total), late_days, late_total,
             fine_total if emp["count_late"] else 0,
         ])
 
-    _style_header(ws, 10)
+    _style_header(ws, 11)
     _autosize(ws)
     ws.freeze_panes = "A2"
 

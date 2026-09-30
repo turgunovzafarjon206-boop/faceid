@@ -176,8 +176,15 @@ async def init_db():
                 sched_name TEXT NOT NULL, day TEXT NOT NULL, start_min INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS sched_alias (
                 sched_name TEXT PRIMARY KEY, employee_id INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS branches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL);
             """
         )
+        # employees: branch_id ustuni
+        cur = await db.execute("PRAGMA table_info(employees)")
+        _cols2 = [r[1] for r in await cur.fetchall()]
+        if "branch_id" not in _cols2:
+            await db.execute("ALTER TABLE employees ADD COLUMN branch_id INTEGER")
         # late_exemptions: from_min ustuni (NULL = butun kun, son = shu vaqtdan boshlab hisoblanadi)
         cur = await db.execute("PRAGMA table_info(late_exemptions)")
         _ecols = [r[1] for r in await cur.fetchall()]
@@ -222,7 +229,7 @@ async def _row_to_emp(row):
         return None
     keys = ["id", "first_name", "last_name", "phone", "faceid_user_id",
             "telegram_id", "work_start", "work_end", "grace_minutes",
-            "count_late", "active", "created_at", "department_id"]
+            "count_late", "active", "created_at", "department_id", "branch_id"]
     return dict(zip(keys, row))
 
 
@@ -1082,3 +1089,126 @@ async def unknown_pending():
         except Exception:
             pass
     return pending
+
+
+# ==================== Filiallar (branches) ====================
+async def add_branch(name):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS branches (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)")
+        try:
+            cur = await db.execute("INSERT INTO branches(name) VALUES(?)", (name.strip(),))
+            await db.commit()
+            return cur.lastrowid
+        except aiosqlite.IntegrityError:
+            return None
+
+
+async def list_branches():
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """SELECT b.id, b.name, COUNT(e.id)
+                   FROM branches b
+                   LEFT JOIN employees e ON e.branch_id=b.id AND e.active=1
+                   GROUP BY b.id ORDER BY b.name""")
+            return [{"id": r[0], "name": r[1], "count": r[2]} for r in await cur.fetchall()]
+    except Exception:
+        return []
+
+
+async def get_branch(branch_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT id,name FROM branches WHERE id=?", (branch_id,))
+            r = await cur.fetchone()
+            return {"id": r[0], "name": r[1]} if r else None
+    except Exception:
+        return None
+
+
+async def find_branch_by_name(name):
+    key = " ".join(str(name).lower().split())
+    for b in await list_branches():
+        if " ".join(b["name"].lower().split()) == key:
+            return b
+    return None
+
+
+async def delete_branch(branch_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE employees SET branch_id=NULL WHERE branch_id=?", (branch_id,))
+        await db.execute("DELETE FROM branches WHERE id=?", (branch_id,))
+        await db.commit()
+
+
+async def set_employee_branch(emp_id, branch_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE employees SET branch_id=? WHERE id=?", (branch_id, emp_id))
+        await db.commit()
+
+
+async def branch_members(branch_id, active_only=True):
+    async with aiosqlite.connect(DB_PATH) as db:
+        q = "SELECT * FROM employees WHERE branch_id=?"
+        if active_only:
+            q += " AND active=1"
+        q += " ORDER BY LOWER(first_name), LOWER(last_name)"
+        cur = await db.execute(q, (branch_id,))
+        return [await _row_to_emp(r) for r in await cur.fetchall()]
+
+
+async def employees_export_text():
+    """Ommaviy tayinlash uchun matn: 'Username — Filial nomi' qatorlari."""
+    lines = []
+    for e in await list_employees():
+        br = ""
+        if e.get("branch_id"):
+            b = await get_branch(e["branch_id"])
+            br = b["name"] if b else ""
+        lines.append(f"{full_name(e)} — {br}")
+    return "\n".join(lines)
+
+
+async def bulk_assign_branches(text, create_missing=True):
+    """Matnni o'qib, har bir xodimga filial tayinlaydi.
+    Format: 'Username — Filial' (ajratgich: —, -, :, | yoki tab)."""
+    ok = 0
+    not_found = []
+    created = []
+    for raw in str(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = None
+        for sep in ("—", "–", "\t", " - ", ":", "|"):
+            if sep in line:
+                parts = line.split(sep, 1)
+                break
+        if not parts or len(parts) < 2:
+            continue
+        name, bname = parts[0].strip(), parts[1].strip()
+        if not name or not bname:
+            continue
+        emp = await get_employee_by_name(name)
+        if not emp:
+            not_found.append(name)
+            continue
+        br = await find_branch_by_name(bname)
+        if not br:
+            if not create_missing:
+                not_found.append(f"{name} (filial: {bname})")
+                continue
+            bid = await add_branch(bname)
+            if bid is None:
+                br = await find_branch_by_name(bname)
+                bid = br["id"] if br else None
+            else:
+                created.append(bname)
+            if bid is None:
+                continue
+        else:
+            bid = br["id"]
+        await set_employee_branch(emp["id"], bid)
+        ok += 1
+    return {"ok": ok, "not_found": not_found, "created": created}

@@ -105,6 +105,11 @@ class SchedBind(StatesGroup):
     search = State()
 
 
+class BranchState(StatesGroup):
+    name = State()
+    bulk = State()
+
+
 def _month_range():
     now = dt.datetime.now(TZ)
     first = now.replace(day=1).strftime("%Y-%m-%d")
@@ -221,7 +226,7 @@ async def add_countlate(cb: CallbackQuery, state: FSMContext):
     await state.update_data(count_late=int(cb.data.split(":")[1]))
     deps = await db.list_departments()
     if not deps:
-        await _create_employee(cb.message, state, dep_id=None)
+        await _ask_branch_or_create(cb.message, state, dep_id=None)
     else:
         await state.set_state(AddEmp.department)
         await cb.message.answer("Bo'limni tanlang:", reply_markup=kb.add_dep_pick_kb(deps))
@@ -233,11 +238,35 @@ async def add_pick_dep(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
     dep_id = int(cb.data.split(":")[1]) or None
-    await _create_employee(cb.message, state, dep_id=dep_id)
+    await _ask_branch_or_create(cb.message, state, dep_id=dep_id)
     await cb.answer()
 
 
-async def _create_employee(target, state: FSMContext, dep_id):
+async def _ask_branch_or_create(target, state: FSMContext, dep_id):
+    await state.update_data(dep_id=dep_id)
+    branches = await db.list_branches()
+    if not branches:
+        await _create_employee(target, state, dep_id=dep_id, branch_id=None)
+        return
+    await state.set_state(None)
+    await target.answer("Filialni tanlang:", reply_markup=kb.add_branch_pick_kb(branches))
+
+
+@router.callback_query(F.data.startswith("addbr:"))
+async def add_pick_branch(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    data = await state.get_data()
+    if "username" not in data:
+        await cb.answer("Sessiya tugagan, qaytadan boshlang", show_alert=True)
+        await state.clear()
+        return
+    branch_id = int(cb.data.split(":")[1]) or None
+    await _create_employee(cb.message, state, dep_id=data.get("dep_id"), branch_id=branch_id)
+    await cb.answer()
+
+
+async def _create_employee(target, state: FSMContext, dep_id, branch_id=None):
     data = await state.get_data()
     try:
         emp_id = await db.add_employee(
@@ -250,16 +279,22 @@ async def _create_employee(target, state: FSMContext, dep_id):
         return
     if dep_id:
         await db.set_employee_department(emp_id, dep_id)
+    if branch_id:
+        await db.set_employee_branch(emp_id, branch_id)
     dep_name = ""
     if dep_id:
         d = await db.get_department(dep_id)
         dep_name = f"\n🏢 Bo'lim: {d['name']}" if d else ""
+    br_name = ""
+    if branch_id:
+        b = await db.get_branch(branch_id)
+        br_name = f"\n🏬 Filial: {b['name']}" if b else ""
     cl = "hisoblanadi" if data.get("count_late", 1) else "hisoblanmaydi"
     await state.clear()
     await target.answer(
         f"✅ Xodim qo'shildi!\n\n👤 Username: {data['username']}\n"
         f"📞 {data['phone']}\n🕐 {data['ws']}-{data['we']}\n"
-        f"⏰ Kechikish: {cl}{dep_name}\n\n"
+        f"⏰ Kechikish: {cl}{dep_name}{br_name}\n\n"
         f"Endi xodim botga /start bosib, shu raqam bilan kirsin.",
         reply_markup=kb.admin_menu())
 
@@ -291,9 +326,13 @@ async def show_emp(cb: CallbackQuery):
     if emp.get("department_id"):
         d = await db.get_department(emp["department_id"])
         dep = d["name"] if d else "yo'q"
+    br = "yo'q"
+    if emp.get("branch_id"):
+        b = await db.get_branch(emp["branch_id"])
+        br = b["name"] if b else "yo'q"
     await cb.message.answer(
         f"👤 Username: {db.full_name(emp)}\n📞 {emp['phone']}\n"
-        f"🕐 {emp['work_start']}-{emp['work_end']}\n🏢 Bo'lim: {dep}\n"
+        f"🕐 {emp['work_start']}-{emp['work_end']}\n🏢 Bo'lim: {dep}\n🏬 Filial: {br}\n"
         f"⏰ Kechikish: {'hisoblanadi' if emp['count_late'] else 'hisoblanmaydi'}\n"
         f"📲 Telegram: {bound}",
         reply_markup=kb.employee_manage_kb(emp))
@@ -372,37 +411,91 @@ async def save_edit(msg: Message, state: FSMContext):
 
 
 # ==================== FaceID boshqarish: Hisobot (Excel) ====================
+async def _scope_label(state: FSMContext):
+    data = await state.get_data()
+    kind, sid = data.get("rep_scope"), data.get("rep_scope_id")
+    if kind == "dep":
+        d = await db.get_department(sid)
+        return f"🏢 {d['name']}" if d else "Hamma xodim"
+    if kind == "branch":
+        b = await db.get_branch(sid)
+        return f"🏬 {b['name']}" if b else "Hamma xodim"
+    return "Hamma xodim"
+
+
 @router.callback_query(F.data == "a:report")
-async def report_menu(cb: CallbackQuery):
+async def report_menu(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    await cb.message.answer("Qaysi davr uchun Excel hisobot?", reply_markup=kb.admin_report_kb())
+    await cb.message.answer("Qaysi davr uchun Excel hisobot?",
+                            reply_markup=kb.admin_report_kb(await _scope_label(state)))
     await cb.answer()
 
 
-async def _send_excel(target, day_from, day_to, title):
-    emps = await db.list_employees()
+@router.callback_query(F.data == "arep:scope")
+async def report_scope(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    deps = await db.list_departments()
+    branches = await db.list_branches()
+    await cb.message.answer("Hisobot kim uchun olinsin?",
+                            reply_markup=kb.report_scope_kb(deps, branches))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("ascope:"))
+async def report_scope_set(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    parts = cb.data.split(":")
+    if parts[1] == "all":
+        await state.update_data(rep_scope=None, rep_scope_id=None)
+    elif parts[1] == "d":
+        await state.update_data(rep_scope="dep", rep_scope_id=int(parts[2]))
+    else:
+        await state.update_data(rep_scope="branch", rep_scope_id=int(parts[2]))
+    label = await _scope_label(state)
+    await cb.answer("Tanlandi ✅")
+    await cb.message.answer(f"👥 Hisobot qamrovi: {label}\nEndi davrni tanlang:",
+                            reply_markup=kb.admin_report_kb(label))
+
+
+async def _scoped_employees(state: FSMContext):
+    data = await state.get_data()
+    kind, sid = data.get("rep_scope"), data.get("rep_scope_id")
+    if kind == "dep":
+        return await db.department_members(sid), await _scope_label(state)
+    if kind == "branch":
+        return await db.branch_members(sid), await _scope_label(state)
+    return await db.list_employees(), "Hamma xodim"
+
+
+async def _send_excel(target, day_from, day_to, title, state=None):
+    if state is not None:
+        emps, label = await _scoped_employees(state)
+    else:
+        emps, label = await db.list_employees(), "Hamma xodim"
     if not emps:
-        await target.answer("Xodim yo'q.")
+        await target.answer("Bu qamrovda xodim yo'q.")
         return
     path = await reports.build_period_excel(emps, day_from, day_to, title)
     await target.answer_document(
         FSInputFile(path, filename=f"{title.replace(' ', '_')}_{day_from}_{day_to}.xlsx"),
-        caption=f"📊 {title}\n{day_from} … {day_to}")
+        caption=f"📊 {title}\n👥 {label}\n{day_from} … {day_to}")
 
 
 @router.callback_query(F.data == "arep:today")
-async def rep_today(cb: CallbackQuery):
+async def rep_today(cb: CallbackQuery, state: FSMContext):
     day = dt.datetime.now(TZ).strftime("%Y-%m-%d")
     await cb.answer("Tayyorlanmoqda...")
-    await _send_excel(cb.message, day, day, "Kunlik hisobot")
+    await _send_excel(cb.message, day, day, "Kunlik hisobot", state)
 
 
 @router.callback_query(F.data == "arep:month")
-async def rep_month(cb: CallbackQuery):
+async def rep_month(cb: CallbackQuery, state: FSMContext):
     first, last = _month_range()
     await cb.answer("Tayyorlanmoqda...")
-    await _send_excel(cb.message, first, last, "Oylik hisobot")
+    await _send_excel(cb.message, first, last, "Oylik hisobot", state)
 
 
 @router.callback_query(F.data == "arep:months")
@@ -415,11 +508,11 @@ async def rep_months(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("arepmon:"))
-async def rep_month_pick(cb: CallbackQuery):
+async def rep_month_pick(cb: CallbackQuery, state: FSMContext):
     ym = cb.data.split(":")[1]
     first, last = reports.month_bounds(ym)
     await cb.answer("Tayyorlanmoqda...")
-    await _send_excel(cb.message, first, last, "Oylik hisobot")
+    await _send_excel(cb.message, first, last, "Oylik hisobot", state)
 
 
 @router.callback_query(F.data == "arep:period")
@@ -443,7 +536,7 @@ async def rep_period_got(msg: Message, state: FSMContext):
     if d1 > d2:
         d1, d2 = d2, d1
     await msg.answer("⏳ Excel tayyorlanmoqda...")
-    await _send_excel(msg, d1, d2, "Davr hisoboti")
+    await _send_excel(msg, d1, d2, "Davr hisoboti", state)
 
 
 async def _fine_mode():
@@ -1753,3 +1846,142 @@ async def unknown_pick(cb: CallbackQuery, state: FSMContext):
         f"➕ Yangi xodim: {name}\nUsername avtomatik yozildi.\n\n"
         "Telefon raqamini kiriting (masalan 901234567):")
     await cb.answer()
+
+
+# ==================== Filiallar ====================
+@router.message(F.text == "🏬 Filiallar")
+async def m_branches(msg: Message):
+    if is_admin(msg.from_user.id):
+        await msg.answer("🏬 Filiallar boshqaruvi:", reply_markup=kb.branch_manage_kb())
+
+
+@router.callback_query(F.data == "br:add")
+async def br_add(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(BranchState.name)
+    await cb.message.answer("Yangi filial nomini yozing (masalan: Chilonzor filiali):")
+    await cb.answer()
+
+
+@router.message(BranchState.name, F.text)
+async def br_add_save(msg: Message, state: FSMContext):
+    bid = await db.add_branch(msg.text.strip())
+    await state.clear()
+    if bid:
+        await msg.answer(f"✅ Filial qo'shildi: {msg.text.strip()}",
+                         reply_markup=kb.branch_manage_kb())
+    else:
+        await msg.answer("❌ Bunday filial allaqachon bor.", reply_markup=kb.branch_manage_kb())
+
+
+@router.callback_query(F.data == "br:list")
+async def br_list(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    branches = await db.list_branches()
+    if not branches:
+        await cb.message.answer("Hozircha filial yo'q.")
+    else:
+        total = sum(b["count"] for b in branches)
+        await cb.message.answer(f"🏬 Filiallar (jami xodim: {total}). Tanlang:",
+                                reply_markup=kb.branches_kb(branches))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("brshow:"))
+async def br_show(cb: CallbackQuery):
+    bid = int(cb.data.split(":")[1])
+    br = await db.get_branch(bid)
+    members = await db.branch_members(bid)
+    lines = [f"🏬 {br['name']} — {len(members)} ta xodim\n"]
+    for m in members:
+        link = "🟢" if m["telegram_id"] else "🔴"
+        lines.append(f"{link} {db.full_name(m)} ({m['phone']})")
+    await cb.message.answer("\n".join(lines), reply_markup=kb.branch_actions_kb(bid))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("brmem:"))
+async def br_members(cb: CallbackQuery):
+    await br_show(cb)
+
+
+@router.callback_query(F.data.startswith("brdel:"))
+async def br_delete(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await db.delete_branch(int(cb.data.split(":")[1]))
+    await cb.answer("O'chirildi")
+    await cb.message.answer("🗑 Filial o'chirildi (xodimlar filialsiz qoldi).",
+                            reply_markup=kb.branch_manage_kb())
+
+
+@router.callback_query(F.data == "br:export")
+async def br_export(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    text = await db.employees_export_text()
+    if not text:
+        await cb.message.answer("Xodim yo'q.")
+        return await cb.answer()
+    await cb.message.answer(
+        "⬇️ Xodimlar ro'yxati.\n"
+        "Har qator: <b>Username — Filial</b>\n"
+        "Filial nomini yozib (yoki o'zgartirib), matnni nusxalab qaytaring — "
+        "«⬆️ Filiallarni matndan yuklash» orqali.")
+    for i in range(0, len(text), 3500):
+        await cb.message.answer(f"<code>{text[i:i+3500]}</code>")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "br:bulk")
+async def br_bulk(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(BranchState.bulk)
+    await cb.message.answer(
+        "⬆️ Filiallarni matndan yuklash.\n\n"
+        "Har qatorga shunday yozing:\n"
+        "<code>Username — Filial nomi</code>\n\n"
+        "Masalan:\n"
+        "<code>Tolipova Nodiraxon — Chilonzor\nAli Valiyev — Yunusobod</code>\n\n"
+        "Ajratgich sifatida —, -, : yoki | ishlatsa bo'ladi. "
+        "Yangi filial nomi bo'lsa, avtomatik yaratiladi.")
+    await cb.answer()
+
+
+@router.message(BranchState.bulk, F.text)
+async def br_bulk_apply(msg: Message, state: FSMContext):
+    res = await db.bulk_assign_branches(msg.text)
+    await state.clear()
+    lines = [f"✅ Filial tayinlandi: {res['ok']} ta xodim"]
+    if res["created"]:
+        lines.append(f"🆕 Yangi filiallar: {', '.join(sorted(set(res['created'])))}")
+    if res["not_found"]:
+        lines.append(f"⚠️ Topilmadi ({len(res['not_found'])}): " +
+                     ", ".join(res["not_found"][:15]))
+    await msg.answer("\n".join(lines), reply_markup=kb.branch_manage_kb())
+
+
+@router.callback_query(F.data.startswith("empbr:"))
+async def emp_branch_choose(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp_id = int(cb.data.split(":")[1])
+    branches = await db.list_branches()
+    if not branches:
+        return await cb.answer("Avval filial qo'shing", show_alert=True)
+    await cb.message.answer("Filialni tanlang:", reply_markup=kb.emp_branch_kb(branches, emp_id))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("setbr:"))
+async def emp_branch_set(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    _, emp_id, bid = cb.data.split(":")
+    bid = int(bid)
+    await db.set_employee_branch(int(emp_id), bid if bid else None)
+    await cb.answer("Saqlandi ✅")
+    await cb.message.answer("🏬 Filial yangilandi.")

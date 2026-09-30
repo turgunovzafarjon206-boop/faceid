@@ -87,6 +87,7 @@ def admin_menu():
         keyboard=[
             [KeyboardButton(text="📷 FaceID boshqarish")],
             [KeyboardButton(text="👥 Ma'lumotlar"), KeyboardButton(text="🏢 Bo'limlar")],
+            [KeyboardButton(text="🏬 Filiallar")],
             [KeyboardButton(text="✉️ Xabar"), KeyboardButton(text="🔔 Eslatma")],
             [KeyboardButton(text="📋 Ma'lumot talablari"), KeyboardButton(text="📊 So'rovnoma")],
             [KeyboardButton(text="🔙 Oddiy menyu")],
@@ -256,13 +257,62 @@ def admin_msg_kb():
     ])
 
 
-def admin_report_kb():
+def admin_report_kb(scope_label="Hamma xodim"):
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"👥 Kim uchun: {scope_label}", callback_data="arep:scope")],
         [InlineKeyboardButton(text="📅 Bugun", callback_data="arep:today"),
          InlineKeyboardButton(text="🗓 Bu oy", callback_data="arep:month")],
         [InlineKeyboardButton(text="📆 Boshqa oy", callback_data="arep:months")],
         [InlineKeyboardButton(text="⏳ Davr (sana-sana)", callback_data="arep:period")],
     ])
+
+
+def report_scope_kb(deps, branches):
+    rows = [[InlineKeyboardButton(text="👥 Hamma xodim", callback_data="ascope:all")]]
+    for d in deps:
+        rows.append([InlineKeyboardButton(text=f"🏢 {d['name']} ({d['count']})",
+                                          callback_data=f"ascope:d:{d['id']}")])
+    for b in branches:
+        rows.append([InlineKeyboardButton(text=f"🏬 {b['name']} ({b['count']})",
+                                          callback_data=f"ascope:b:{b['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def branch_manage_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Filial qo'shish", callback_data="br:add")],
+        [InlineKeyboardButton(text="📋 Filiallar ro'yxati", callback_data="br:list")],
+        [InlineKeyboardButton(text="⬇️ Xodimlar ro'yxati (matn)", callback_data="br:export")],
+        [InlineKeyboardButton(text="⬆️ Filiallarni matndan yuklash", callback_data="br:bulk")],
+    ])
+
+
+def branches_kb(branches, prefix="brshow"):
+    rows = [[InlineKeyboardButton(text=f"🏬 {b['name']} ({b['count']})",
+                                  callback_data=f"{prefix}:{b['id']}")] for b in branches]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def branch_actions_kb(branch_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Xodimlari", callback_data=f"brmem:{branch_id}")],
+        [InlineKeyboardButton(text="🗑 Filialni o'chirish", callback_data=f"brdel:{branch_id}")],
+    ])
+
+
+def emp_branch_kb(branches, emp_id):
+    kb = [[InlineKeyboardButton(text="— Filialsiz —", callback_data=f"setbr:{emp_id}:0")]]
+    for b in branches:
+        kb.append([InlineKeyboardButton(text=f"🏬 {b['name']}",
+                                        callback_data=f"setbr:{emp_id}:{b['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def add_branch_pick_kb(branches):
+    kb = [[InlineKeyboardButton(text="— Filialsiz —", callback_data="addbr:0")]]
+    for b in branches:
+        kb.append([InlineKeyboardButton(text=f"🏬 {b['name']}", callback_data=f"addbr:{b['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def bcast_confirm_kb():
@@ -311,6 +361,7 @@ def employee_manage_kb(emp):
         [InlineKeyboardButton(text="🕐 Ish grafigi", callback_data=f"edit:schedule:{emp['id']}")],
         [InlineKeyboardButton(text=late, callback_data=f"togglelate:{emp['id']}")],
         [InlineKeyboardButton(text="🏢 Bo'lim tayinlash", callback_data=f"empdep:{emp['id']}")],
+        [InlineKeyboardButton(text="🏬 Filial tayinlash", callback_data=f"empbr:{emp['id']}")],
         [InlineKeyboardButton(text="👑 Admin qilish", callback_data=f"empadm:{emp['id']}")],
         [InlineKeyboardButton(text="📊 Hisobot (bu oy)", callback_data=f"report:{emp['id']}")],
         [InlineKeyboardButton(text="🗑 O'chirish (nofaol)", callback_data=f"deactivate:{emp['id']}")],
