@@ -86,9 +86,9 @@ class RestoreState(StatesGroup):
 
 
 class Exempt(StatesGroup):
-    date = State()
-    time = State()
     search = State()
+    dates = State()
+    time = State()
 
 
 class SetTime(StatesGroup):
@@ -1386,10 +1386,19 @@ async def exempt_menu(cb: CallbackQuery):
         return await cb.answer()
     await cb.message.answer(
         "🚫 Kechikishni hisoblamaslik.\n\n"
-        "📅 Kun uchun — tanlangan kunda butun kun kechikish (va jarima) hisoblanmaydi.\n"
+        "📅 Kun uchun — tanlangan kunlarda butun kun kechikish (va jarima) hisoblanmaydi.\n"
         "🕒 Vaqt uchun — siz kiritgan vaqtdan boshlab kechikish hisoblanadi "
-        "(masalan 09:30 kiritsangiz, 09:30 dan keyin kelganlar shundan hisoblab kech qoladi).",
+        "(masalan 09:30 kiritsangiz, 09:30 dan keyin kelganlar shundan hisoblab kech qoladi).\n\n"
+        "Tartib: avval xodimlarni tanlaysiz, keyin sanalarni (bir nechta bo'lishi mumkin).",
         reply_markup=kb.exempt_menu_kb())
+    await cb.answer()
+
+
+async def _exempt_start(cb, state, mode):
+    await state.set_state(Exempt.search)
+    await state.update_data(ex_selected=[], ex_found=[], ex_days=[], ex_mode=mode, ex_from=None)
+    title = "📅 Kun uchun" if mode == "day" else "🕒 Vaqt uchun"
+    await cb.message.answer(f"{title}.\nAvval xodim ismini (username) qidiring:")
     await cb.answer()
 
 
@@ -1397,57 +1406,14 @@ async def exempt_menu(cb: CallbackQuery):
 async def exempt_add(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    await state.set_state(Exempt.date)
-    await state.update_data(ex_selected=[], ex_found=[], ex_mode="day", ex_from=None)
-    await cb.message.answer("📅 Kun uchun. Sana kiriting (YYYY-MM-DD, masalan 2026-09-06):")
-    await cb.answer()
+    await _exempt_start(cb, state, "day")
 
 
 @router.callback_query(F.data == "ex:addtime")
 async def exempt_add_time(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    await state.set_state(Exempt.date)
-    await state.update_data(ex_selected=[], ex_found=[], ex_mode="time", ex_from=None)
-    await cb.message.answer("🕒 Vaqt uchun. Sana kiriting (YYYY-MM-DD, masalan 2026-09-06):")
-    await cb.answer()
-
-
-@router.message(Exempt.date, F.text)
-async def exempt_date(msg: Message, state: FSMContext):
-    try:
-        day = dt.datetime.strptime(msg.text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
-    except ValueError:
-        await msg.answer("❌ Noto'g'ri format. Masalan: 2026-09-06")
-        return
-    data = await state.get_data()
-    await state.update_data(ex_day=day)
-    if data.get("ex_mode") == "time":
-        await state.set_state(Exempt.time)
-        await msg.answer(f"📅 Sana: {day}\n"
-                         "Vaqtni kiriting (HH:MM). Shu vaqtdan boshlab kechikish hisoblanadi.\n"
-                         "Masalan: 09:30")
-        return
-    await state.set_state(Exempt.search)
-    await msg.answer(f"📅 Sana: {day}\nEndi xodim ismini (username) qidiring:")
-
-
-@router.message(Exempt.time, F.text)
-async def exempt_time(msg: Message, state: FSMContext):
-    txt = msg.text.strip().replace(".", ":")
-    try:
-        t = dt.datetime.strptime(txt, "%H:%M")
-    except ValueError:
-        try:
-            t = dt.datetime.strptime(txt, "%H")
-        except ValueError:
-            await msg.answer("❌ Noto'g'ri format. Masalan: 09:30")
-            return
-    from_min = t.hour * 60 + t.minute
-    await state.update_data(ex_from=from_min)
-    await state.set_state(Exempt.search)
-    await msg.answer(f"🕒 {t.strftime('%H:%M')} dan boshlab hisoblanadi.\n"
-                     "Endi xodim ismini (username) qidiring:")
+    await _exempt_start(cb, state, "time")
 
 
 @router.callback_query(F.data == "ex:search")
@@ -1460,16 +1426,11 @@ async def exempt_search_again(cb: CallbackQuery, state: FSMContext):
 @router.message(Exempt.search, F.text)
 async def exempt_search(msg: Message, state: FSMContext):
     data = await state.get_data()
-    if not data.get("ex_day"):
-        await msg.answer("Avval sanani kiriting.")
-        return
     found = await db.search_employees(msg.text.strip(), linked_only=False)
     await state.set_state(None)
     selected = set(data.get("ex_selected", []))
-    # topilganlarni holatda saqlaymiz (tugmalarni qayta chizish uchun)
     found_min = [{"id": e["id"], "first_name": e["first_name"],
                   "last_name": e["last_name"], "phone": e["phone"]} for e in found]
-    # avvalgi topilganlarni ham saqlab qolamiz (ko'p qidiruvda tanlov yo'qolmasin)
     prev = {f["id"]: f for f in data.get("ex_found", [])}
     for f in found_min:
         prev[f["id"]] = f
@@ -1478,7 +1439,8 @@ async def exempt_search(msg: Message, state: FSMContext):
         await msg.answer("Topilmadi. «🔎 Yana qidirish» bilan urinib ko'ring.",
                          reply_markup=kb.ex_select_kb(list(prev.values()), selected))
         return
-    await msg.answer(f"📅 {data['ex_day']} — belgilang va «✅ Saqlash»:",
+    await msg.answer("Xodimlarni belgilang (bir nechta bo'lishi mumkin), "
+                     "so'ng «➡️ Davom etish»:",
                      reply_markup=kb.ex_select_kb(found_min, selected))
 
 
@@ -1494,7 +1456,6 @@ async def exempt_toggle(cb: CallbackQuery, state: FSMContext):
     await state.update_data(ex_selected=list(selected))
     await cb.answer("✅ belgilandi" if eid in selected else "olib tashlandi")
     found = data.get("ex_found", [])
-    # joriy xabardagi ro'yxatni ko'rsatamiz
     shown_ids = []
     try:
         for r in cb.message.reply_markup.inline_keyboard:
@@ -1510,17 +1471,129 @@ async def exempt_toggle(cb: CallbackQuery, state: FSMContext):
         pass
 
 
+@router.callback_query(F.data == "exnext")
+async def exempt_next(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    data = await state.get_data()
+    selected = data.get("ex_selected", [])
+    if not selected:
+        return await cb.answer("Avval xodim belgilang", show_alert=True)
+    names = []
+    for f in data.get("ex_found", []):
+        if f["id"] in selected:
+            names.append((str(f['first_name'] or '') + ' ' + str(f['last_name'] or '')).strip())
+    if data.get("ex_mode") == "time":
+        await state.set_state(Exempt.time)
+        await cb.message.answer(
+            f"👥 Tanlandi: {len(selected)} ta ({', '.join(names[:10])})\n\n"
+            "🕒 Vaqtni kiriting (HH:MM). Shu vaqtdan boshlab kechikish hisoblanadi.\n"
+            "Masalan: 09:30")
+    else:
+        await state.set_state(Exempt.dates)
+        await cb.message.answer(
+            f"👥 Tanlandi: {len(selected)} ta ({', '.join(names[:10])})\n\n"
+            "📅 Endi sanalarni yuboring (YYYY-MM-DD).\n"
+            "Bir nechta kun bo'lsa: har birini alohida yuboring yoki bittada vergul/probel bilan.\n"
+            "Masalan: <code>2026-09-06, 2026-09-07</code>\n"
+            "Oraliq ham mumkin: <code>2026-09-06..2026-09-10</code>")
+    await cb.answer()
+
+
+@router.message(Exempt.time, F.text)
+async def exempt_time(msg: Message, state: FSMContext):
+    txt = msg.text.strip().replace(".", ":")
+    try:
+        t = dt.datetime.strptime(txt, "%H:%M")
+    except ValueError:
+        try:
+            t = dt.datetime.strptime(txt, "%H")
+        except ValueError:
+            await msg.answer("❌ Noto'g'ri format. Masalan: 09:30")
+            return
+    await state.update_data(ex_from=t.hour * 60 + t.minute)
+    await state.set_state(Exempt.dates)
+    await msg.answer(
+        f"🕒 {t.strftime('%H:%M')} dan boshlab hisoblanadi.\n\n"
+        "📅 Endi sanalarni yuboring (YYYY-MM-DD).\n"
+        "Bir nechta kun: vergul bilan yoki oraliq <code>2026-09-06..2026-09-10</code>")
+
+
+def _parse_days(text):
+    """Matndan sanalarni ajratadi: vergul/probel bilan yoki 'A..B' oralig'i."""
+    days, bad = [], []
+    chunks = [c.strip() for c in text.replace(",", " ").split() if c.strip()]
+    for ch in chunks:
+        if ".." in ch:
+            a, b = ch.split("..", 1)
+            try:
+                d1 = dt.datetime.strptime(a.strip(), "%Y-%m-%d")
+                d2 = dt.datetime.strptime(b.strip(), "%Y-%m-%d")
+            except ValueError:
+                bad.append(ch)
+                continue
+            if d2 < d1:
+                d1, d2 = d2, d1
+            cur = d1
+            while cur <= d2 and len(days) < 120:
+                days.append(cur.strftime("%Y-%m-%d"))
+                cur += dt.timedelta(days=1)
+        else:
+            try:
+                days.append(dt.datetime.strptime(ch, "%Y-%m-%d").strftime("%Y-%m-%d"))
+            except ValueError:
+                bad.append(ch)
+    return days, bad
+
+
+@router.message(Exempt.dates, F.text)
+async def exempt_dates(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    days, bad = _parse_days(msg.text)
+    if not days:
+        await msg.answer("❌ Sana topilmadi. Masalan: 2026-09-06 yoki 2026-09-06..2026-09-10")
+        return
+    have = list(data.get("ex_days", []))
+    for d in days:
+        if d not in have:
+            have.append(d)
+    have.sort()
+    await state.update_data(ex_days=have)
+    note = f"\n⚠️ Tushunilmadi: {', '.join(bad)}" if bad else ""
+    await msg.answer(
+        f"📅 Tanlangan kunlar: {len(have)} ta{note}\n"
+        "Yana sana yuborishingiz yoki «✅ Saqlash» bosishingiz mumkin:",
+        reply_markup=kb.ex_days_kb(have, data.get("ex_mode", "day")))
+
+
+@router.callback_query(F.data.startswith("exday:"))
+async def exempt_day_remove(cb: CallbackQuery, state: FSMContext):
+    day = cb.data.split(":", 1)[1]
+    data = await state.get_data()
+    have = [d for d in data.get("ex_days", []) if d != day]
+    await state.update_data(ex_days=have)
+    await cb.answer("O'chirildi")
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=kb.ex_days_kb(have, data.get("ex_mode", "day")))
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data == "exsave")
 async def exempt_save(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    day = data.get("ex_day")
     selected = data.get("ex_selected", [])
-    if not day or not selected:
-        return await cb.answer("Hech kim belgilanmagan", show_alert=True)
+    days = data.get("ex_days", [])
+    if not selected:
+        return await cb.answer("Xodim belgilanmagan", show_alert=True)
+    if not days:
+        return await cb.answer("Sana kiritilmagan", show_alert=True)
     mode = data.get("ex_mode", "day")
     from_min = data.get("ex_from") if mode == "time" else None
     try:
-        await db.add_exemptions(selected, day, from_min)
+        for day in days:
+            await db.add_exemptions(selected, day, from_min)
     except Exception as e:
         await cb.answer()
         await cb.message.answer(f"❌ Xatolik: {e}", reply_markup=kb.admin_menu())
@@ -1528,11 +1601,13 @@ async def exempt_save(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer("Saqlandi ✅")
     if from_min is None:
-        text = f"✅ {len(selected)} ta xodim uchun {day} kuni kechikish hisoblanmaydi."
+        tail = "butun kun kechikish hisoblanmaydi."
     else:
-        text = (f"✅ {len(selected)} ta xodim uchun {day} kuni kechikish "
-                f"{from_min // 60:02d}:{from_min % 60:02d} dan boshlab hisoblanadi.")
-    await cb.message.answer(text, reply_markup=kb.admin_menu())
+        tail = f"kechikish {from_min // 60:02d}:{from_min % 60:02d} dan boshlab hisoblanadi."
+    await cb.message.answer(
+        f"✅ {len(selected)} ta xodim × {len(days)} kun uchun {tail}\n"
+        f"📅 Kunlar: {', '.join(days[:10])}" + (" …" if len(days) > 10 else ""),
+        reply_markup=kb.admin_menu())
 
 
 @router.callback_query(F.data == "ex:list")

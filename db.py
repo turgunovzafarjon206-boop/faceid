@@ -1092,10 +1092,18 @@ async def unknown_pending():
 
 
 # ==================== Filiallar (branches) ====================
+async def _ensure_branch_schema(db):
+    await db.execute(
+        "CREATE TABLE IF NOT EXISTS branches (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)")
+    cur = await db.execute("PRAGMA table_info(employees)")
+    cols = [r[1] for r in await cur.fetchall()]
+    if "branch_id" not in cols:
+        await db.execute("ALTER TABLE employees ADD COLUMN branch_id INTEGER")
+
+
 async def add_branch(name):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS branches (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)")
+        await _ensure_branch_schema(db)
         try:
             cur = await db.execute("INSERT INTO branches(name) VALUES(?)", (name.strip(),))
             await db.commit()
@@ -1105,16 +1113,26 @@ async def add_branch(name):
 
 
 async def list_branches():
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await _ensure_branch_schema(db)
+            await db.commit()
+        except Exception:
+            pass
+        try:
             cur = await db.execute(
                 """SELECT b.id, b.name, COUNT(e.id)
                    FROM branches b
                    LEFT JOIN employees e ON e.branch_id=b.id AND e.active=1
                    GROUP BY b.id ORDER BY b.name""")
             return [{"id": r[0], "name": r[1], "count": r[2]} for r in await cur.fetchall()]
-    except Exception:
-        return []
+        except Exception:
+            # JOIN ishlamasa ham filiallar ro'yxati ko'rinsin
+            try:
+                cur = await db.execute("SELECT id, name FROM branches ORDER BY name")
+                return [{"id": r[0], "name": r[1], "count": 0} for r in await cur.fetchall()]
+            except Exception:
+                return []
 
 
 async def get_branch(branch_id):
@@ -1144,12 +1162,15 @@ async def delete_branch(branch_id):
 
 async def set_employee_branch(emp_id, branch_id):
     async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_branch_schema(db)
         await db.execute("UPDATE employees SET branch_id=? WHERE id=?", (branch_id, emp_id))
         await db.commit()
 
 
 async def branch_members(branch_id, active_only=True):
     async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_branch_schema(db)
+        await db.commit()
         q = "SELECT * FROM employees WHERE branch_id=?"
         if active_only:
             q += " AND active=1"

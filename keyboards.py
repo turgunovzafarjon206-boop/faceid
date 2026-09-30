@@ -495,7 +495,18 @@ def ex_select_kb(employees, selected):
         rows.append([InlineKeyboardButton(text=f"{mark} {nm} ({e['phone']})",
                                           callback_data=f"exsel:{e['id']}")])
     rows.append([InlineKeyboardButton(text="🔎 Yana qidirish", callback_data="ex:search")])
-    rows.append([InlineKeyboardButton(text=f"✅ Saqlash ({len(selected)} ta)", callback_data="exsave")])
+    rows.append([InlineKeyboardButton(text=f"➡️ Davom etish ({len(selected)} ta tanlandi)",
+                                      callback_data="exnext")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ex_days_kb(days, mode):
+    """Tanlangan sanalar ro'yxati + saqlash."""
+    rows = []
+    for d in days:
+        rows.append([InlineKeyboardButton(text=f"🗑 {d}", callback_data=f"exday:{d}")])
+    label = "✅ Saqlash" if days else "✅ Saqlash (sana yo'q)"
+    rows.append([InlineKeyboardButton(text=f"{label} ({len(days)} kun)", callback_data="exsave")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
