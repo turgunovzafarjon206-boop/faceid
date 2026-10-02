@@ -104,13 +104,22 @@ def detect_month(title):
     return None
 
 
-async def _call_anthropic(image_bytes, media_type, model):
+import logging as _logging
+_log = _logging.getLogger("lesson_vision")
+
+RETRY_PROMPT = PROMPT + """
+
+MUHIM: Javobing FAQAT bitta JSON obyekt bo'lsin. Izoh, tushuntirish, markdown yozma.
+Agar rasmni yaxshi ko'ra olmasang ham, ko'ringan kataklarni JSON shaklida qaytar."""
+
+
+async def _call_anthropic(image_bytes, media_type, model, prompt):
     payload = {
-        "model": model, "max_tokens": 4000,
+        "model": model, "max_tokens": 8000,
         "messages": [{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": media_type,
                                          "data": base64.b64encode(image_bytes).decode()}},
-            {"type": "text", "text": PROMPT}]}],
+            {"type": "text", "text": prompt}]}],
     }
     headers = {"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                "content-type": "application/json"}
@@ -118,26 +127,39 @@ async def _call_anthropic(image_bytes, media_type, model):
     return "".join(b.get("text", "") for b in body.get("content", []) if b.get("type") == "text")
 
 
-async def _call_openai_style(image_bytes, media_type, model, base_url, key):
+async def _call_openai_style(image_bytes, media_type, model, base_url, key, prompt):
     """DeepSeek, OpenRouter va boshqa OpenAI-uslubidagi xizmatlar."""
     data_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode()}"
-    payload = {
-        "model": model, "max_tokens": 4000, "temperature": 0,
+    base = {
+        "model": model, "max_tokens": 8000, "temperature": 0,
         "messages": [{"role": "user", "content": [
-            {"type": "text", "text": PROMPT},
+            {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_url}}]}],
     }
     headers = {"Authorization": f"Bearer {key}", "content-type": "application/json"}
-    body = await _post(f"{base_url}/chat/completions", payload, headers)
-    msg = (body.get("choices") or [{}])[0].get("message", {})
+    url = f"{base_url}/chat/completions"
+    # Avval JSON rejimi bilan; xizmat qo'llamasa (400) — oddiy so'rov
+    try:
+        body = await _post(url, dict(base, response_format={"type": "json_object"}), headers)
+    except RuntimeError as e:
+        if "(400)" not in str(e) and "(422)" not in str(e):
+            raise
+        body = await _post(url, base, headers)
+    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
     content = msg.get("content")
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
+    content = content or ""
+    # "Fikrlash" rejimida javob boshqa maydonga tushishi mumkin
+    if "{" not in content:
+        alt = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        if isinstance(alt, str) and "{" in alt:
+            content = alt
+    return content
 
 
 async def _post(url, payload, headers):
-    timeout = aiohttp.ClientTimeout(total=120)
+    timeout = aiohttp.ClientTimeout(total=150)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         async with s.post(url, json=payload, headers=headers) as resp:
             body = await resp.json(content_type=None)
@@ -148,43 +170,82 @@ async def _post(url, payload, headers):
             return body
 
 
+_CELL_RE = re.compile(r"\{[^{}]*?\"day\"[^{}]*?\}")
+_TITLE_RE = re.compile(r"\"month_title\"\s*:\s*\"([^\"]*)\"")
+
+
+def _extract(text):
+    """Javobdan kataklarni ajratadi. JSON to'liq bo'lmasa ham alohida kataklarni topadi.
+    Qaytaradi: (cells, month_title)."""
+    text = (text or "").replace("```json", "").replace("```", "").strip()
+    raw_cells, title = None, None
+    i, j = text.find("{"), text.rfind("}")
+    if i != -1 and j > i:
+        try:
+            data = json.loads(text[i:j + 1])
+            if isinstance(data, dict):
+                raw_cells, title = data.get("cells"), data.get("month_title")
+            elif isinstance(data, list):
+                raw_cells = data
+        except (ValueError, TypeError):
+            pass
+    if raw_cells is None:   # buzilgan/kesilgan JSON — kataklarni birma-bir yig'amiz
+        raw_cells = []
+        for m in _CELL_RE.finditer(text):
+            try:
+                raw_cells.append(json.loads(m.group(0)))
+            except ValueError:
+                continue
+        tm = _TITLE_RE.search(text)
+        title = tm.group(1) if tm else None
+    cells = []
+    for c in raw_cells or []:
+        if not isinstance(c, dict):
+            continue
+        try:
+            cells.append({
+                "row": int(c["row"]) if c.get("row") is not None else None,
+                "col": int(c["col"]) if c.get("col") is not None else None,
+                "day": int(c.get("day")),
+                "start": norm_time(c.get("start")),
+            })
+        except (TypeError, ValueError, KeyError):
+            continue
+    return [c for c in cells if c["start"] is not None], title
+
+
+async def _ask(provider, model, image_bytes, media_type, prompt):
+    if provider == "anthropic":
+        return await _call_anthropic(image_bytes, media_type, model, prompt)
+    if provider == "deepseek":
+        if not DEEPSEEK_KEY:
+            raise RuntimeError("DEEPSEEK_API_KEY o'rnatilmagan.")
+        return await _call_openai_style(image_bytes, media_type, model,
+                                        "https://api.deepseek.com", DEEPSEEK_KEY, prompt)
+    if not (GENERIC_URL and GENERIC_KEY):
+        raise RuntimeError("VISION_BASE_URL va VISION_API_KEY o'rnatilmagan.")
+    return await _call_openai_style(image_bytes, media_type, model, GENERIC_URL, GENERIC_KEY, prompt)
+
+
 async def parse_image(image_bytes, media_type="image/jpeg"):
-    """Qaytaradi: (cells, month_title). Xatolikda Exception."""
+    """Qaytaradi: (cells, month_title). Bir marta avtomatik qayta urinadi."""
     provider = _provider()
     if not provider:
         raise RuntimeError(
             "Rasm o'qish uchun API kalit o'rnatilmagan. Railway → Variables ga "
             "DEEPSEEK_API_KEY (yoki ANTHROPIC_API_KEY) qo'shing.")
     model = _model(provider)
-    if provider == "anthropic":
-        text = await _call_anthropic(image_bytes, media_type, model)
-    elif provider == "deepseek":
-        if not DEEPSEEK_KEY:
-            raise RuntimeError("DEEPSEEK_API_KEY o'rnatilmagan.")
-        text = await _call_openai_style(image_bytes, media_type, model,
-                                        "https://api.deepseek.com", DEEPSEEK_KEY)
-    else:
-        if not (GENERIC_URL and GENERIC_KEY):
-            raise RuntimeError("VISION_BASE_URL va VISION_API_KEY o'rnatilmagan.")
-        text = await _call_openai_style(image_bytes, media_type, model, GENERIC_URL, GENERIC_KEY)
-
-    text = text.replace("```json", "").replace("```", "").strip()
-    i, j = text.find("{"), text.rfind("}")
-    if i == -1 or j == -1:
-        raise RuntimeError("Rasmdan jadval o'qib bo'lmadi (javob JSON emas).")
-    data = json.loads(text[i:j + 1])
-    cells = []
-    for c in data.get("cells", []):
-        try:
-            cells.append({
-                "row": int(c.get("row")) if c.get("row") is not None else None,
-                "col": int(c.get("col")) if c.get("col") is not None else None,
-                "day": int(c.get("day")),
-                "start": norm_time(c.get("start")),
-            })
-        except (TypeError, ValueError):
-            continue
-    return [c for c in cells if c["start"] is not None], data.get("month_title")
+    last_text = ""
+    for attempt, prompt in enumerate((PROMPT, RETRY_PROMPT), 1):
+        text = await _ask(provider, model, image_bytes, media_type, prompt)
+        last_text = text
+        _log.info("Vision javobi (%s/%s, urinish %s): %s", provider, model, attempt, (text or "")[:300])
+        cells, title = _extract(text)
+        if cells:
+            return cells, title
+    snippet = " ".join((last_text or "(bo'sh javob)").split())[:160]
+    raise RuntimeError(
+        f"Rasmdan jadval o'qib bo'lmadi ({provider} / {model}).\nModel javobi: «{snippet}»")
 
 
 def parse_text(text):
