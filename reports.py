@@ -65,12 +65,19 @@ def fine_rate(streak):
     return 5000
 
 
-async def _apply_schedule(emp, day, r, sched_name):
-    """Ustoz bo'lsa: dars vaqtidan 5 daqiqa oldin kelishi kerak. Dars yo'q kun = dam olish."""
+async def _apply_schedule(emp, day, r, ctx):
+    """Ustoz (O'quv bo'limi) bo'lsa: dars vaqtidan 5 daqiqa oldin kelishi kerak.
+    Manba: avval rasm orqali belgilangan jadval (shu oy uchun), bo'lmasa Excel jadvali.
+    Dars yo'q kun = dam olish."""
     r["kerakli_min"] = None
-    if not sched_name:
+    if not ctx or not ctx.get("is_lesson"):
         return
-    lesson_min = await db.lesson_start_min(sched_name, day)
+    if day[:7] in ctx.get("manual_months", set()):
+        lesson_min = ctx["manual"].get(day)
+    elif ctx.get("sched_name"):
+        lesson_min = await db.lesson_start_min(ctx["sched_name"], day)
+    else:
+        return
     if lesson_min is None:
         r["kechikish_min"] = 0
         r["kech_qoldi"] = False
@@ -120,7 +127,7 @@ async def _late_series(emp, day_from, day_to):
     for day, etype, ts in rows:
         by_day.setdefault(day, []).append((etype, ts))
     exempt_map = await db.exempt_map_for(emp["id"])
-    sched_name = await db.schedule_name_for_employee(emp)
+    sched_name = await db.lesson_context(emp)
     series = []
     for day in sorted(by_day):
         r = compute_day(emp, by_day[day])
@@ -275,7 +282,7 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
     kirish = r["kirish"].strftime("%H:%M") if r["kirish"] else "-"
     chiqish = r["chiqish"].strftime("%H:%M") if r["chiqish"] else "-"
     # Dars jadvali (ustozlar) — dars vaqtidan 5 daqiqa oldin
-    sched_name = await db.schedule_name_for_employee(emp)
+    sched_name = await db.lesson_context(emp)
     await _apply_schedule(emp, day, r, sched_name)
     # Kechirim (kun yoki vaqt bo'yicha)
     had_late = r["kechikish_min"] > 0
@@ -518,7 +525,7 @@ async def notify_text(emp, etype, ts):
     r = compute_day(emp, events) or {}
     # Dars jadvali (ustozlar)
     if r:
-        sched_name = await db.schedule_name_for_employee(emp)
+        sched_name = await db.lesson_context(emp)
         await _apply_schedule(emp, day, r, sched_name)
         _apply_exemption(emp, day, r, await db.exempt_map_for(emp["id"]))
     worked = fmt_duration(r.get("ishlangan_min", 0))

@@ -20,6 +20,8 @@ class UserState(StatesGroup):
     wait_date = State()
     edit_value = State()
     hr_wait = State()
+    exreq_date = State()
+    exreq_reason = State()
 
 
 def today_str():
@@ -257,6 +259,67 @@ async def hr_send(msg: Message, state: FSMContext):
             pass
     if sent:
         await msg.answer("✅ Xabaringiz HR bo'limiga yuborildi. Tez orada javob beriladi.",
+                         reply_markup=kb.user_menu())
+    else:
+        await msg.answer("❌ Hozircha admin mavjud emas.", reply_markup=kb.user_menu())
+
+
+# ==================== 📝 Jarima hisoblamaslik so'rash ====================
+@router.message(F.text == "📝 Jarima hisoblamaslik so'rash")
+async def exreq_start(msg: Message, state: FSMContext):
+    if not await _need_emp(msg):
+        return
+    await state.set_state(UserState.exreq_date)
+    await msg.answer("📝 Qaysi kun uchun jarima hisoblanmasligini so'raysiz?\n"
+                     "Sanani <b>kun.oy.yil</b> ko'rinishida yozing, masalan: <code>06.09.2026</code>")
+
+
+@router.message(UserState.exreq_date, F.text)
+async def exreq_date(msg: Message, state: FSMContext):
+    raw = msg.text.strip().replace("/", ".").replace("-", ".")
+    day = None
+    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+        try:
+            day = dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+            break
+        except ValueError:
+            continue
+    if not day:
+        await msg.answer("❌ Noto'g'ri format. Masalan: <code>06.09.2026</code>")
+        return
+    await state.update_data(exreq_day=day)
+    await state.set_state(UserState.exreq_reason)
+    await msg.answer(f"📅 {reports.uz_date(day)}\nEndi sababini yozing:")
+
+
+@router.message(UserState.exreq_reason, F.text)
+async def exreq_reason(msg: Message, state: FSMContext):
+    emp = await db.get_employee_by_telegram(msg.from_user.id)
+    data = await state.get_data()
+    day = data.get("exreq_day")
+    await state.clear()
+    if not emp or not day:
+        await msg.answer("Qaytadan urinib ko'ring.", reply_markup=kb.user_menu())
+        return
+    reason = msg.text.strip()[:1000]
+    req_id = await db.create_exempt_request(emp["id"], day, reason)
+
+    import admin_handlers
+    summary = await reports.daily_text(emp, day, for_admin=True)
+    text = (f"📝 <b>Jarima hisoblamaslik so'rovi</b>\n\n"
+            f"👤 {db.full_name(emp)} ({emp['phone']})\n"
+            f"📅 Sana: {reports.uz_date(day)}\n"
+            f"💬 Sabab: {reason}\n\n"
+            f"— O'sha kungi qayd —\n{summary}")
+    sent = 0
+    for aid in admin_handlers.all_admin_ids():
+        try:
+            await msg.bot.send_message(aid, text, reply_markup=kb.exreq_admin_kb(req_id))
+            sent += 1
+        except Exception:
+            pass
+    if sent:
+        await msg.answer("✅ So'rovingiz adminga yuborildi. Qaror chiqqach sizga xabar keladi.",
                          reply_markup=kb.user_menu())
     else:
         await msg.answer("❌ Hozircha admin mavjud emas.", reply_markup=kb.user_menu())

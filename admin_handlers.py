@@ -110,6 +110,10 @@ class BranchState(StatesGroup):
     bulk = State()
 
 
+class LessonImg(StatesGroup):
+    photo = State()
+
+
 def _month_range():
     now = dt.datetime.now(TZ)
     first = now.replace(day=1).strftime("%Y-%m-%d")
@@ -2060,3 +2064,197 @@ async def emp_branch_set(cb: CallbackQuery):
     await db.set_employee_branch(int(emp_id), bid if bid else None)
     await cb.answer("Saqlandi ✅")
     await cb.message.answer("🏬 Filial yangilandi.")
+
+
+# ==================== Rasm orqali dars jadval belgilash ====================
+import io as _io
+
+
+def _lesson_months():
+    """Keyingi oy, joriy oy va oldingi 3 oy."""
+    now = dt.datetime.now(TZ)
+    y, m = now.year, now.month + 1
+    if m == 13:
+        y, m = y + 1, 1
+    out = []
+    for _ in range(5):
+        out.append((f"{reports.UZ_MONTHS[m]} {y}", f"{y}-{m:02d}"))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return out
+
+
+@router.callback_query(F.data == "a:fidback")
+async def faceid_back(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.answer("📷 FaceID boshqarish:", reply_markup=kb.admin_faceid_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "a:lessonimg")
+async def lesson_img_menu(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.clear()
+    emps = await db.oquv_employees()
+    if not emps:
+        await cb.message.answer(
+            "❌ O'quv bo'limida xodim topilmadi.\n"
+            "Avval «O'quv bo'limi» nomli bo'lim yarating va ustozlarni unga qo'shing.",
+            reply_markup=kb.back_kb("a:fidback"))
+        return await cb.answer()
+    await cb.message.answer(
+        f"🗓 Dars jadval belgilash.\nO'quv bo'limi xodimlari ({len(emps)} ta) — ustozni tanlang:",
+        reply_markup=kb.lesson_emp_kb(emps))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("limg:"))
+async def lesson_img_pick(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    if not emp:
+        return await cb.answer("Topilmadi", show_alert=True)
+    await state.clear()
+    await state.update_data(li_emp=emp["id"])
+    await state.set_state(LessonImg.photo)
+    await cb.message.answer(
+        f"👤 {db.full_name(emp)}\n\n"
+        "📷 Shu ustozning oylik dars jadvali rasmini yuboring "
+        "(HolliHop → Расписание → «Месяц» ko'rinishi, skrinshot).\n\n"
+        "Har kungi birinchi dars vaqti olinadi, kelish vaqti = dars − 5 daqiqa.\n\n"
+        "💡 Rasm o'rniga matn ham yuborsa bo'ladi — har qatorda «kun vaqt»:\n"
+        "<code>3 17:00\n5 9:30\n7 17:00</code>",
+        reply_markup=kb.back_kb("a:lessonimg"))
+    await cb.answer()
+
+
+async def _lesson_ask_month(msg, state, cells, detected):
+    await state.update_data(li_cells=cells)
+    await state.set_state(None)
+    det = ""
+    if detected:
+        y, m = detected.split("-")
+        det = f"\nRasmdan aniqlangan oy: ⭐ {reports.UZ_MONTHS[int(m)]} {y}"
+    await msg.answer(
+        f"✅ O'qildi: {len(cells)} ta dars bor katak.{det}\n\nQaysi oy uchun saqlansin?",
+        reply_markup=kb.lesson_month_kb(_lesson_months(), detected))
+
+
+@router.message(LessonImg.photo, F.photo | F.document)
+async def lesson_img_photo(msg: Message, state: FSMContext):
+    if msg.document:
+        mt = (msg.document.mime_type or "").lower()
+        if not mt.startswith("image/"):
+            await msg.answer("❌ Rasm yuboring (jpg/png).")
+            return
+        file_id, media_type = msg.document.file_id, mt
+    else:
+        file_id, media_type = msg.photo[-1].file_id, "image/jpeg"
+    wait = await msg.answer("⏳ Rasm tahlil qilinmoqda (10–40 soniya)...")
+    buf = _io.BytesIO()
+    await msg.bot.download(file_id, destination=buf)
+    import lesson_vision
+    try:
+        cells, title = await lesson_vision.parse_image(buf.getvalue(), media_type)
+    except Exception as e:
+        await msg.answer(
+            f"❌ Rasmni o'qib bo'lmadi:\n{str(e)[:300]}\n\n"
+            "Qaytadan aniqroq rasm yuboring yoki jadvalni matn bilan yuboring "
+            "(har qatorda «kun vaqt», masalan <code>3 17:00</code>).",
+            reply_markup=kb.back_kb("a:lessonimg"))
+        return
+    if not cells:
+        await msg.answer("❌ Rasmda dars topilmadi. Aniqroq skrinshot yuboring.",
+                         reply_markup=kb.back_kb("a:lessonimg"))
+        return
+    await _lesson_ask_month(msg, state, cells, lesson_vision.detect_month(title))
+
+
+@router.message(LessonImg.photo, F.text)
+async def lesson_img_text(msg: Message, state: FSMContext):
+    import lesson_vision
+    cells = lesson_vision.parse_text(msg.text)
+    if not cells:
+        await msg.answer("❌ Tushunilmadi. Rasm yuboring yoki har qatorda «kun vaqt» yozing, "
+                         "masalan <code>3 17:00</code>.")
+        return
+    await _lesson_ask_month(msg, state, cells, None)
+
+
+@router.callback_query(F.data.startswith("limgm:"))
+async def lesson_img_month(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    data = await state.get_data()
+    cells, emp_id = data.get("li_cells"), data.get("li_emp")
+    if not cells or not emp_id:
+        return await cb.answer("Sessiya tugagan, qaytadan boshlang", show_alert=True)
+    ym = cb.data.split(":", 1)[1]
+    import lesson_vision
+    result = lesson_vision.map_to_month(cells, ym)
+    y, m = ym.split("-")
+    mlabel = f"{reports.UZ_MONTHS[int(m)]} {y}"
+    if not result:
+        await cb.message.answer(
+            f"❌ {mlabel} uchun mos kun topilmadi. Rasmdagi oy boshqa bo'lishi mumkin — "
+            "boshqa oyni tanlang.", reply_markup=kb.lesson_month_kb(_lesson_months()))
+        return await cb.answer()
+    await db.save_manual_lessons(emp_id, ym, result)
+    emp = await db.get_employee_by_id(emp_id)
+    await state.clear()
+    lines = [f"✅ Saqlandi: {db.full_name(emp)} — {mlabel}",
+             f"📚 Dars kunlari: {len(result)} ta | kelish = dars − 5 daqiqa\n"]
+    for d, mins in sorted(result.items()):
+        need = mins - 5
+        lines.append(f"{reports.uz_date(d)} ({reports.uz_weekday(d)[:3]}): "
+                     f"dars {mins // 60:02d}:{mins % 60:02d} → kelish {need // 60:02d}:{need % 60:02d}")
+    lines.append("\nShu oyda dars yo'q kunlar — dam olish (kechikish yozilmaydi).")
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3800):
+        last = i + 3800 >= len(text)
+        await cb.message.answer(text[i:i + 3800],
+                                reply_markup=kb.back_kb("a:lessonimg") if last else None)
+    await cb.answer("Saqlandi ✅")
+
+
+# ==================== Xodim so'rovi: jarima hisoblamaslik ====================
+@router.callback_query(F.data.startswith("exreq:"))
+async def exreq_decide(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ruxsat yo'q", show_alert=True)
+    _, action, rid = cb.data.split(":")
+    req = await db.get_exempt_request(int(rid))
+    if not req:
+        return await cb.answer("So'rov topilmadi", show_alert=True)
+    status = "approved" if action == "ok" else "rejected"
+    if not await db.decide_exempt_request(req["id"], status, cb.from_user.id):
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return await cb.answer("Bu so'rov allaqachon hal qilingan", show_alert=True)
+    emp = await db.get_employee_by_id(req["employee_id"])
+    day_txt = reports.uz_date(req["day"])
+    if status == "approved":
+        await db.add_exemptions([req["employee_id"]], req["day"], None)
+        result_admin = f"✅ Qaror: {db.full_name(emp)} — {day_txt} uchun jarima HISOBLANMAYDI."
+        result_emp = (f"✅ {day_txt} uchun so'rovingiz qabul qilindi.\n"
+                      "Shu kun uchun kechikish va jarima hisoblanmaydi.")
+    else:
+        result_admin = f"❌ Qaror: {db.full_name(emp)} — {day_txt} uchun jarima HISOBLANADI."
+        result_emp = (f"❌ {day_txt} uchun so'rovingiz rad etildi.\n"
+                      "Shu kun uchun jarima hisoblanadi.")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer(result_admin)
+    if emp and emp.get("telegram_id"):
+        try:
+            await cb.bot.send_message(emp["telegram_id"], result_emp)
+        except Exception:
+            pass
+    await cb.answer("Saqlandi ✅")

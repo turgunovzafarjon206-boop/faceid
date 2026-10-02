@@ -178,6 +178,13 @@ async def init_db():
                 sched_name TEXT PRIMARY KEY, employee_id INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS branches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL);
+            CREATE TABLE IF NOT EXISTS manual_lessons (
+                employee_id INTEGER NOT NULL, day TEXT NOT NULL, start_min INTEGER NOT NULL,
+                UNIQUE(employee_id, day));
+            CREATE TABLE IF NOT EXISTS exempt_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
+                day TEXT NOT NULL, reason TEXT, status TEXT DEFAULT 'pending',
+                created_at TEXT, decided_by INTEGER);
             """
         )
         # employees: branch_id ustuni
@@ -1233,3 +1240,106 @@ async def bulk_assign_branches(text, create_missing=True):
         await set_employee_branch(emp["id"], bid)
         ok += 1
     return {"ok": ok, "not_found": not_found, "created": created}
+
+
+# ==================== Rasm orqali dars jadvali (har xodimga) ====================
+async def _ensure_manual_lessons(db):
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS manual_lessons (
+               employee_id INTEGER NOT NULL, day TEXT NOT NULL, start_min INTEGER NOT NULL,
+               UNIQUE(employee_id, day))""")
+
+
+async def save_manual_lessons(emp_id, ym, day_to_min):
+    """ym='2026-09'. Shu oy uchun eski yozuvlar o'chiriladi va yangilari yoziladi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_manual_lessons(db)
+        await db.execute("DELETE FROM manual_lessons WHERE employee_id=? AND substr(day,1,7)=?",
+                         (emp_id, ym))
+        await db.executemany(
+            "INSERT OR REPLACE INTO manual_lessons(employee_id,day,start_min) VALUES(?,?,?)",
+            [(emp_id, d, m) for d, m in sorted(day_to_min.items())])
+        await db.commit()
+
+
+async def manual_lessons_for(emp_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT day, start_min FROM manual_lessons WHERE employee_id=?", (emp_id,))
+            return {r[0]: r[1] for r in await cur.fetchall()}
+    except Exception:
+        return {}
+
+
+async def lesson_context(emp):
+    """Dars-jadval konteksti (faqat O'quv bo'limi uchun).
+    Rasm orqali belgilangan oylar Excel jadvalidan ustun turadi."""
+    if not await is_lesson_employee(emp):
+        return {"is_lesson": False}
+    manual = await manual_lessons_for(emp["id"])
+    return {
+        "is_lesson": True,
+        "sched_name": await schedule_name_for_employee(emp),
+        "manual": manual,
+        "manual_months": {d[:7] for d in manual},
+    }
+
+
+async def oquv_employees():
+    """O'quv bo'limi(lar)idagi faol xodimlar."""
+    out = []
+    for d in await list_departments():
+        nm = str(d["name"]).lower().replace("'", "").replace("`", "").replace("ʻ", "")
+        if "quv" in nm:
+            out.extend(await department_members(d["id"]))
+    seen, res = set(), []
+    for e in out:
+        if e["id"] not in seen:
+            seen.add(e["id"]); res.append(e)
+    return res
+
+
+# ==================== Xodim: jarima hisoblamaslik so'rovi ====================
+async def _ensure_exreq(db):
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS exempt_requests (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
+               day TEXT NOT NULL, reason TEXT, status TEXT DEFAULT 'pending',
+               created_at TEXT, decided_by INTEGER)""")
+
+
+async def create_exempt_request(emp_id, day, reason):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_exreq(db)
+        cur = await db.execute(
+            "INSERT INTO exempt_requests(employee_id,day,reason,status,created_at) VALUES(?,?,?,?,?)",
+            (emp_id, day, reason, "pending", now_local().isoformat()))
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_exempt_request(req_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "SELECT id,employee_id,day,reason,status,decided_by FROM exempt_requests WHERE id=?",
+                (req_id,))
+            r = await cur.fetchone()
+            if not r:
+                return None
+            return {"id": r[0], "employee_id": r[1], "day": r[2], "reason": r[3],
+                    "status": r[4], "decided_by": r[5]}
+    except Exception:
+        return None
+
+
+async def decide_exempt_request(req_id, status, admin_id):
+    """Faqat 'pending' bo'lsa o'zgartiradi. True — muvaffaqiyatli, False — allaqachon hal qilingan."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_exreq(db)
+        cur = await db.execute(
+            "UPDATE exempt_requests SET status=?, decided_by=? WHERE id=? AND status='pending'",
+            (status, admin_id, req_id))
+        await db.commit()
+        return cur.rowcount > 0

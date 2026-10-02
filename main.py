@@ -29,6 +29,7 @@ MENU_BUTTONS = {
     "📷 FaceID boshqarish", "👥 Ma'lumotlar", "🏢 Bo'limlar", "✉️ Xabar",
     "🔔 Eslatma", "📋 Ma'lumot talablari", "📊 So'rovnoma", "🔙 Oddiy menyu",
     "📷 FaceID", "👤 Mening ma'lumotlarim", "✉️ HR bo'limiga xabar",
+    "📝 Jarima hisoblamaslik so'rash", "🏬 Filiallar",
 }
 
 

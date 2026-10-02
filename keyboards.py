@@ -16,6 +16,7 @@ def user_menu():
         keyboard=[
             [KeyboardButton(text="📷 FaceID"), KeyboardButton(text="👤 Mening ma'lumotlarim")],
             [KeyboardButton(text="✉️ HR bo'limiga xabar")],
+            [KeyboardButton(text="📝 Jarima hisoblamaslik so'rash")],
         ],
         resize_keyboard=True,
     )
@@ -102,6 +103,7 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="📝 Bildirishnoma matnlari", callback_data="a:tpl")],
         [InlineKeyboardButton(text="💰 Jarima ko'rinishi (xodimga)", callback_data="a:finetoggle")],
         [InlineKeyboardButton(text="🕐 Ortiqcha ko'rinishi (xodimga)", callback_data="a:overtoggle")],
+        [InlineKeyboardButton(text="🗓 Dars jadval belgilash (rasm)", callback_data="a:lessonimg")],
         [InlineKeyboardButton(text="📅 Dars jadvali yuklash/yangilash", callback_data="a:schedupload")],
         [InlineKeyboardButton(text="🔗 Ismlarni biriktirish", callback_data="a:schedbind")],
         [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
@@ -562,3 +564,38 @@ def unknown_kb(items):
             text=f"➕ {it['name']} ({it['cnt']} marta)", callback_data=f"unk:{h}")])
     rows.append([InlineKeyboardButton(text="🔄 Guruh tarixini qayta o'qish", callback_data="unk:refresh")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ==================== Rasm orqali dars jadvali ====================
+def lesson_emp_kb(employees):
+    rows = []
+    for e in employees:
+        nm = (str(e['first_name'] or '') + ' ' + str(e['last_name'] or '')).strip()
+        rows.append([InlineKeyboardButton(text=f"👤 {nm}", callback_data=f"limg:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="a:fidback")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def lesson_month_kb(months, detected=None):
+    """months: [(label, 'YYYY-MM')]. Rasmdan aniqlangan oy birinchi turadi."""
+    rows = []
+    if detected:
+        months = sorted(months, key=lambda x: x[1] != detected)
+    for label, ym in months:
+        mark = "⭐ " if ym == detected else ""
+        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"limgm:{ym}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="a:lessonimg")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def back_kb(callback_data, text="⬅️ Orqaga"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=text, callback_data=callback_data)]])
+
+
+# ==================== Jarima hisoblamaslik so'rovi ====================
+def exreq_admin_kb(req_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Jarima hisoblanmaydi", callback_data=f"exreq:ok:{req_id}")],
+        [InlineKeyboardButton(text="❌ Jarima hisoblanadi", callback_data=f"exreq:no:{req_id}")],
+    ])
