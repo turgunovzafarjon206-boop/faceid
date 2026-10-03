@@ -16,6 +16,7 @@ import user_handlers
 import admin_handlers
 import forms_handlers
 import survey_handlers
+import group_handlers
 from scheduler import faceid_poller, daily_report_loop
 
 logging.basicConfig(
@@ -85,6 +86,7 @@ async def main():
         return True
 
     # Admin routeri birinchi (admin tugmalari ustunlik olishi uchun)
+    dp.include_router(group_handlers.router)
     dp.include_router(admin_handlers.router)
     dp.include_router(forms_handlers.router)
     dp.include_router(survey_handlers.router)
@@ -102,6 +104,23 @@ async def main():
         log.warning("Userbot ishga tushmadi: %s", e)
 
     log.info("Bot ishga tushdi. To'xtatish uchun Ctrl+C.")
+    # Buyruqlar menyusi (Telegram'da "/" bosilganda ko'rinadi)
+    try:
+        from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
+        await bot.set_my_commands([
+            BotCommand(command="jarima", description="Filial jarimalari: /jarima Filial oy"),
+            BotCommand(command="jamoa", description="Filial xodimlari: /jamoa Filial"),
+        ], scope=BotCommandScopeAllGroupChats())
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Boshlash"),
+            BotCommand(command="admin", description="Admin panel"),
+            BotCommand(command="jarima", description="Filial jarimalari (admin)"),
+            BotCommand(command="jamoa", description="Filial xodimlari (admin)"),
+            BotCommand(command="id", description="Telegram ID"),
+        ], scope=BotCommandScopeAllPrivateChats())
+    except Exception as e:
+        log.warning("Buyruqlar menyusini o'rnatib bo'lmadi: %s", e)
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 

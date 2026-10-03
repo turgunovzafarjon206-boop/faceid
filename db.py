@@ -1343,3 +1343,26 @@ async def decide_exempt_request(req_id, status, admin_id):
             (status, admin_id, req_id))
         await db.commit()
         return cur.rowcount > 0
+
+
+async def lesson_days_in_range(emp, day_from, day_to):
+    """O'quv bo'limi xodimining shu oraliqdagi dars kunlari: {'YYYY-MM-DD': dars_boshlanish_min}.
+    Rasm orqali belgilangan oy Excel jadvalidan ustun turadi."""
+    ctx = await lesson_context(emp)
+    if not ctx.get("is_lesson"):
+        return {}
+    out = {d: m for d, m in ctx["manual"].items() if day_from <= d <= day_to}
+    sn = ctx.get("sched_name")
+    if sn:
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute(
+                    """SELECT day, MIN(start_min) FROM lesson_times
+                       WHERE sched_name=? AND day BETWEEN ? AND ? GROUP BY day""",
+                    (sn, day_from, day_to))
+                for d, m in await cur.fetchall():
+                    if d[:7] not in ctx["manual_months"] and d not in out:
+                        out[d] = m
+        except Exception:
+            pass
+    return out

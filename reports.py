@@ -441,7 +441,17 @@ async def build_period_excel(employees, day_from, day_to, title):
                       "Ishlangan vaqt", "Ortiqcha (daqiqa)", "Kechikish (daqiqa)", "Jarima (so'm)"])
 
         over_total = 0
-        for day, r, late in series:
+        # Oldindan belgilangan dars kunlari (FaceID qaydi hali bo'lmasa ham qator chiqadi)
+        lesson_days = await db.lesson_days_in_range(emp, day_from, day_to)
+        by_day = {day: (r, late) for day, r, late in series}
+        for day in sorted(set(by_day) | set(lesson_days)):
+            if day not in by_day:
+                need = lesson_days[day] - 5
+                sheet.append([uz_date(day), uz_weekday(day),
+                              f"{need // 60:02d}:{need % 60:02d}",
+                              "-", "-", "-", 0, 0, 0])
+                continue
+            r, late = by_day[day]
             worked_days += 1
             worked_total += r["ishlangan_min"]
             late_total += late
