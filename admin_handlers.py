@@ -337,6 +337,7 @@ async def show_emp(cb: CallbackQuery):
     await cb.message.answer(
         f"👤 Username: {db.full_name(emp)}\n📞 {emp['phone']}\n"
         f"🕐 {emp['work_start']}-{emp['work_end']}\n🏢 Bo'lim: {dep}\n🏬 Filial: {br}\n"
+        f"👔 Rol: {db.ROLE_NAMES.get(await db.get_role(emp['id']), 'yo‘q')}\n"
         f"⏰ Kechikish: {'hisoblanadi' if emp['count_late'] else 'hisoblanmaydi'}\n"
         f"📲 Telegram: {bound}",
         reply_markup=kb.employee_manage_kb(emp))
@@ -2220,41 +2221,171 @@ async def lesson_img_month(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Saqlandi ✅")
 
 
-# ==================== Xodim so'rovi: jarima hisoblamaslik ====================
+# ==================== Xodim so'rovi: jarima hisoblamaslik (rollar bilan) ====================
+async def exreq_recipients(emp):
+    """So'rov kimlarga boradi: {telegram_id: 'head'|'manager'|'admin'}.
+    Oddiy xodim -> o'z bo'limi rahbari; bo'lim rahbari -> menejerlar; adminlar — doim hammasi."""
+    role = await db.get_role(emp["id"])
+    ids = {}
+    if role == "head":
+        for m in await db.role_holders("manager"):
+            if m["telegram_id"] and m["id"] != emp["id"]:
+                ids[m["telegram_id"]] = "manager"
+    elif role != "manager" and emp.get("department_id"):
+        for h in await db.role_holders("head", emp["department_id"]):
+            if h["telegram_id"] and h["id"] != emp["id"]:
+                ids[h["telegram_id"]] = "head"
+    for aid in all_admin_ids():
+        if aid != emp.get("telegram_id"):
+            ids.setdefault(aid, "admin")
+    return ids
+
+
+async def can_decide(uid, req_emp):
+    if is_admin(uid):
+        return True
+    if req_emp.get("telegram_id") == uid:
+        return False                       # o'z so'rovini o'zi tasdiqlay olmaydi
+    me = await db.get_employee_by_telegram(uid)
+    if not me:
+        return False
+    my_role = await db.get_role(me["id"])
+    req_role = await db.get_role(req_emp["id"])
+    if my_role == "manager" and req_role == "head":
+        return True
+    if (my_role == "head" and req_role not in ("head", "manager")
+            and me.get("department_id") and me["department_id"] == req_emp.get("department_id")):
+        return True
+    return False
+
+
+async def person_name(uid):
+    e = await db.get_employee_by_telegram(uid) if uid else None
+    if e:
+        role = await db.get_role(e["id"])
+        if role:
+            return f"{db.full_name(e)} ({db.ROLE_NAMES[role]})"
+        return f"{db.full_name(e)} (Admin)" if is_admin(uid) else db.full_name(e)
+    return "Admin"
+
+
 @router.callback_query(F.data.startswith("exreq:"))
 async def exreq_decide(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ruxsat yo'q", show_alert=True)
     _, action, rid = cb.data.split(":")
     req = await db.get_exempt_request(int(rid))
     if not req:
         return await cb.answer("So'rov topilmadi", show_alert=True)
+    emp = await db.get_employee_by_id(req["employee_id"])
+    if not emp:
+        return await cb.answer("Xodim topilmadi", show_alert=True)
+    if not await can_decide(cb.from_user.id, emp):
+        return await cb.answer("⛔ Sizda bu so'rovni belgilash huquqi yo'q", show_alert=True)
+
+    fine = await reports.day_fine(emp, req["day"])   # belgilashdan oldingi jarima
     status = "approved" if action == "ok" else "rejected"
     if not await db.decide_exempt_request(req["id"], status, cb.from_user.id):
+        done = await db.get_exempt_request(req["id"])
+        who = await person_name(done.get("decided_by")) if done else "boshqa odam"
         try:
             await cb.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
-        return await cb.answer("Bu so'rov allaqachon hal qilingan", show_alert=True)
-    emp = await db.get_employee_by_id(req["employee_id"])
-    day_txt = reports.uz_date(req["day"])
+        return await cb.answer(f"Allaqachon belgilangan: {who}", show_alert=True)
+
     if status == "approved":
-        await db.add_exemptions([req["employee_id"]], req["day"], None)
-        result_admin = f"✅ Qaror: {db.full_name(emp)} — {day_txt} uchun jarima HISOBLANMAYDI."
-        result_emp = (f"✅ {day_txt} uchun so'rovingiz qabul qilindi.\n"
-                      "Shu kun uchun kechikish va jarima hisoblanmaydi.")
+        await db.add_exemptions([emp["id"]], req["day"], None)
+    who = await person_name(cb.from_user.id)
+    day_txt = reports.uz_date(req["day"])
+    fine_txt = f"{reports.fmt_sum(fine)} so'm"
+    if status == "approved":
+        stamp = f"✅ <b>Belgilandi: jarima hisoblanmaydi</b> ({fine_txt})\n👤 Belgiladi: {who}"
+        emp_msg = f"✅ {day_txt} kungi {fine_txt} jarima hisobga olinmaydi.\n👤 Belgiladi: {who}"
     else:
-        result_admin = f"❌ Qaror: {db.full_name(emp)} — {day_txt} uchun jarima HISOBLANADI."
-        result_emp = (f"❌ {day_txt} uchun so'rovingiz rad etildi.\n"
-                      "Shu kun uchun jarima hisoblanadi.")
-    try:
-        await cb.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await cb.message.answer(result_admin)
-    if emp and emp.get("telegram_id"):
+        stamp = f"❌ <b>Belgilandi: jarima hisoblanadi</b> ({fine_txt})\n👤 Belgiladi: {who}"
+        emp_msg = f"❌ {day_txt} kungi {fine_txt} jarima hisobga olinadi.\n👤 Belgiladi: {who}"
+
+    # So'rov borgan HAMMA odamdagi xabarni yangilaymiz: kim belgilagani ko'rinsin
+    edited_here = False
+    for m in await db.exreq_messages_for(req["id"]):
         try:
-            await cb.bot.send_message(emp["telegram_id"], result_emp)
+            await cb.bot.edit_message_text(chat_id=m["chat_id"], message_id=m["message_id"],
+                                           text=(m["text"] or "") + "\n\n" + stamp, reply_markup=None)
+            if m["chat_id"] == cb.message.chat.id and m["message_id"] == cb.message.message_id:
+                edited_here = True
+        except Exception:
+            pass
+    if not edited_here:
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.message.answer(stamp)
+
+    if emp.get("telegram_id"):
+        try:
+            await cb.bot.send_message(emp["telegram_id"], emp_msg)
         except Exception:
             pass
     await cb.answer("Saqlandi ✅")
+
+
+# ==================== Rol berish ====================
+@router.callback_query(F.data.startswith("emprole:"))
+async def emp_role_menu(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
+    cur = await db.get_role(emp["id"])
+    await cb.message.answer(
+        f"👔 {db.full_name(emp)} — hozirgi rol: {db.ROLE_NAMES.get(cur, 'yo‘q')}\n\n"
+        "🧑‍💼 Bo'lim rahbari — o'z bo'limi xodimlarining jarima so'rovlarini belgilaydi.\n"
+        "👔 Menejer — bo'lim rahbarlarining so'rovlarini belgilaydi.\n"
+        "(Adminlarga barcha so'rovlar doim boradi.)",
+        reply_markup=kb.role_kb(emp["id"]))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("setrole:"))
+async def emp_role_set(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    _, eid, role = cb.data.split(":")
+    emp = await db.get_employee_by_id(int(eid))
+    role = None if role == "none" else role
+    if role == "head" and not emp.get("department_id"):
+        return await cb.answer("Avval xodimga bo'lim tayinlang", show_alert=True)
+    await db.set_role(emp["id"], role)
+    label = db.ROLE_NAMES.get(role, "rolsiz")
+    extra = ""
+    if role == "head":
+        d = await db.get_department(emp["department_id"])
+        extra = f" ({d['name']})" if d else ""
+    await cb.message.answer(f"✅ {db.full_name(emp)}: {label}{extra}")
+    if role and emp.get("telegram_id"):
+        try:
+            await cb.bot.send_message(emp["telegram_id"],
+                                      f"👔 Sizga «{label}{extra}» roli berildi. "
+                                      "Endi jarima hisoblamaslik so'rovlari sizga ham keladi.")
+        except Exception:
+            pass
+    await cb.answer("Saqlandi ✅")
+
+
+@router.callback_query(F.data == "a:roles")
+async def roles_list(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    items = await db.all_roles()
+    if not items:
+        await cb.message.answer("Hozircha rol berilmagan.\nXodimlar ro'yxati → xodim → 👔 Rol berish.")
+        return await cb.answer()
+    lines = ["👔 <b>Rollar</b>\n"]
+    for role, e in items:
+        dep = ""
+        if role == "head" and e.get("department_id"):
+            d = await db.get_department(e["department_id"])
+            dep = f" — {d['name']}" if d else ""
+        mark = "🟢" if e["telegram_id"] else "🔴"
+        lines.append(f"{mark} {db.ROLE_NAMES[role]}: {db.full_name(e)}{dep}")
+    await cb.message.answer("\n".join(lines))
+    await cb.answer()

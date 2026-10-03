@@ -215,7 +215,8 @@ def admin_data_kb():
         [InlineKeyboardButton(text="⬇️ Xodimlar ma'lumoti (Excel)", callback_data="a:empexcel")],
         [InlineKeyboardButton(text="🔍 Guruhda bor, bazada yo'q (Topish)", callback_data="a:findunk")],
         [InlineKeyboardButton(text="📋 To'liq to'ldirmaganlar", callback_data="ed:incomplete")],
-        [InlineKeyboardButton(text="👑 Adminlar", callback_data="a:admins")],
+        [InlineKeyboardButton(text="👑 Adminlar", callback_data="a:admins"),
+         InlineKeyboardButton(text="👔 Rollar", callback_data="a:roles")],
         [InlineKeyboardButton(text="💾 Zaxira nusxa", callback_data="a:backup"),
          InlineKeyboardButton(text="♻️ Tiklash", callback_data="a:restore")],
     ])
@@ -364,6 +365,7 @@ def employee_manage_kb(emp):
         [InlineKeyboardButton(text=late, callback_data=f"togglelate:{emp['id']}")],
         [InlineKeyboardButton(text="🏢 Bo'lim tayinlash", callback_data=f"empdep:{emp['id']}")],
         [InlineKeyboardButton(text="🏬 Filial tayinlash", callback_data=f"empbr:{emp['id']}")],
+        [InlineKeyboardButton(text="👔 Rol berish", callback_data=f"emprole:{emp['id']}")],
         [InlineKeyboardButton(text="👑 Admin qilish", callback_data=f"empadm:{emp['id']}")],
         [InlineKeyboardButton(text="📊 Hisobot (bu oy)", callback_data=f"report:{emp['id']}")],
         [InlineKeyboardButton(text="🗑 O'chirish (nofaol)", callback_data=f"deactivate:{emp['id']}")],
@@ -598,4 +600,13 @@ def exreq_admin_kb(req_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Jarima hisoblanmaydi", callback_data=f"exreq:ok:{req_id}")],
         [InlineKeyboardButton(text="❌ Jarima hisoblanadi", callback_data=f"exreq:no:{req_id}")],
+    ])
+
+
+
+def role_kb(emp_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧑‍💼 Bo'lim rahbari", callback_data=f"setrole:{emp_id}:head")],
+        [InlineKeyboardButton(text="👔 Menejer", callback_data=f"setrole:{emp_id}:manager")],
+        [InlineKeyboardButton(text="— Rolsiz —", callback_data=f"setrole:{emp_id}:none")],
     ])

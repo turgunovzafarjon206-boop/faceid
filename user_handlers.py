@@ -265,27 +265,40 @@ async def hr_send(msg: Message, state: FSMContext):
 
 
 # ==================== 📝 Jarima hisoblamaslik so'rash ====================
+import re as _re
+
+
+def _parse_uz_day(text):
+    """'2-sentyabr' / '2 sentyabr' / '2-sent' -> 'YYYY-MM-DD' (joriy yil). Boshqa format -> None."""
+    m = _re.fullmatch(r"\s*(\d{1,2})\s*[-\s]\s*([^\d\s.,/-]+)\s*", text or "")
+    if not m:
+        return None
+    import group_handlers
+    month = group_handlers._month_from_word(m.group(2))
+    if not month:
+        return None
+    year = dt.datetime.now(TZ).year
+    try:
+        return dt.date(year, month, int(m.group(1))).isoformat()
+    except ValueError:
+        return None
+
+
 @router.message(F.text == "📝 Jarima hisoblamaslik so'rash")
 async def exreq_start(msg: Message, state: FSMContext):
     if not await _need_emp(msg):
         return
     await state.set_state(UserState.exreq_date)
     await msg.answer("📝 Qaysi kun uchun jarima hisoblanmasligini so'raysiz?\n"
-                     "Sanani <b>kun.oy.yil</b> ko'rinishida yozing, masalan: <code>06.09.2026</code>")
+                     "Sanani shunday yozing: <code>2-sentyabr</code>\n"
+                     "(yil avtomatik — joriy yil olinadi)")
 
 
 @router.message(UserState.exreq_date, F.text)
 async def exreq_date(msg: Message, state: FSMContext):
-    raw = msg.text.strip().replace("/", ".").replace("-", ".")
-    day = None
-    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
-        try:
-            day = dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-            break
-        except ValueError:
-            continue
+    day = _parse_uz_day(msg.text)
     if not day:
-        await msg.answer("❌ Noto'g'ri format. Masalan: <code>06.09.2026</code>")
+        await msg.answer("❌ Sanani faqat shu ko'rinishda yozing: <code>2-sentyabr</code>")
         return
     await state.update_data(exreq_day=day)
     await state.set_state(UserState.exreq_reason)
@@ -305,21 +318,39 @@ async def exreq_reason(msg: Message, state: FSMContext):
     req_id = await db.create_exempt_request(emp["id"], day, reason)
 
     import admin_handlers
+    fine = await reports.day_fine(emp, day)
+    role = await db.get_role(emp["id"])
+    dep = ""
+    if emp.get("department_id"):
+        d = await db.get_department(emp["department_id"])
+        dep = f" — 🏢 {d['name']}" if d else ""
+    role_txt = f" ({db.ROLE_NAMES[role]})" if role else ""
     summary = await reports.daily_text(emp, day, for_admin=True)
     text = (f"📝 <b>Jarima hisoblamaslik so'rovi</b>\n\n"
-            f"👤 {db.full_name(emp)} ({emp['phone']})\n"
+            f"👤 {db.full_name(emp)}{role_txt}{dep}\n"
             f"📅 Sana: {reports.uz_date(day)}\n"
+            f"💰 Shu kungi jarima: <b>{reports.fmt_sum(fine)} so'm</b>\n"
             f"💬 Sabab: {reason}\n\n"
             f"— O'sha kungi qayd —\n{summary}")
-    sent = 0
-    for aid in admin_handlers.all_admin_ids():
+    recipients = await admin_handlers.exreq_recipients(emp)
+    sent_roles = set()
+    for chat_id, rtype in recipients.items():
         try:
-            await msg.bot.send_message(aid, text, reply_markup=kb.exreq_admin_kb(req_id))
-            sent += 1
+            m = await msg.bot.send_message(chat_id, text, reply_markup=kb.exreq_admin_kb(req_id))
+            await db.add_exreq_message(req_id, chat_id, m.message_id, text)
+            sent_roles.add(rtype)
         except Exception:
             pass
-    if sent:
-        await msg.answer("✅ So'rovingiz adminga yuborildi. Qaror chiqqach sizga xabar keladi.",
-                         reply_markup=kb.user_menu())
-    else:
-        await msg.answer("❌ Hozircha admin mavjud emas.", reply_markup=kb.user_menu())
+    if not sent_roles:
+        await msg.answer("❌ So'rovni qabul qiladigan mas'ul topilmadi.", reply_markup=kb.user_menu())
+        return
+    who = []
+    if "head" in sent_roles:
+        who.append("bo'lim rahbaringizga")
+    if "manager" in sent_roles:
+        who.append("menejerga")
+    if "admin" in sent_roles:
+        who.append("adminga")
+    await msg.answer(f"✅ So'rovingiz {', '.join(who)} yuborildi.\n"
+                     f"💰 {reports.uz_date(day)} kungi jarima: {reports.fmt_sum(fine)} so'm\n"
+                     "Qaror chiqqach sizga xabar keladi.", reply_markup=kb.user_menu())

@@ -153,31 +153,37 @@ async def cmd_jarima(msg: Message, command: CommandObject):
         await msg.answer(f"🏬 {branch['name']}: xodim yo'q.")
         return
     wait = await msg.answer("⏳ Hisoblanmoqda...")
-    rows, clean = [], []
+    fined, clean = [], []
     grand = 0
     for e in emps:
-        if not e["count_late"]:
-            continue
         series = await reports._late_series(e, first, last)
         _, total = reports._apply_fines(series)
-        late_days = sum(1 for _, _, l in series if l > 0)
-        late_min = sum(l for _, _, l in series)
+        if not e["count_late"]:
+            total = 0
+        days = len(series)                                   # ishlagan kunlar
+        worked = sum(r["ishlangan_min"] for _, r, _ in series)  # ishlagan vaqt (daqiqa)
+        item = (total, db.full_name(e), days, worked)
         if total > 0:
-            rows.append((total, db.full_name(e), late_days, late_min))
+            fined.append(item)
             grand += total
         else:
-            clean.append(db.full_name(e))
-    rows.sort(reverse=True)
+            clean.append(item)
+    fined.sort(key=lambda x: (-x[0], x[1].lower()))
+    clean.sort(key=lambda x: x[1].lower())
+
+    def line(n, item):
+        total, name, days, worked = item
+        dur = reports.fmt_duration(worked) if worked else "0 daqiqa"
+        money = f"<b>{reports.fmt_sum(total)} so'm</b>" if total else "0 so'm ✅"
+        return f"{n}. {name} — {money} ({days} kun, {dur})"
+
     lines = [f"💰 <b>Jarimalar — {branch['name']}</b>", f"🗓 {title}\n"]
-    for i, (total, name, ld, lm) in enumerate(rows, 1):
-        lines.append(f"{i}. {name} — <b>{reports.fmt_sum(total)} so'm</b> "
-                     f"({ld} kun, {lm} daq)")
-    if not rows:
-        lines.append("Bu oyda jarima yo'q ✅")
-    lines.append(f"\n💵 Jami: <b>{reports.fmt_sum(grand)} so'm</b> "
-                 f"({len(rows)} ta xodim)")
-    if clean:
-        lines.append(f"✅ Jarimasiz: {len(clean)} ta — " + ", ".join(clean[:40]))
+    n = 0
+    for item in fined + clean:
+        n += 1
+        lines.append(line(n, item))
+    lines.append(f"\n💵 Jami jarima: <b>{reports.fmt_sum(grand)} so'm</b>")
+    lines.append(f"🔴 Jarimali: {len(fined)} ta | ✅ Jarimasiz: {len(clean)} ta")
     try:
         await wait.delete()
     except Exception:

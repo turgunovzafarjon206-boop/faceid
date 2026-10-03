@@ -185,6 +185,11 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL,
                 day TEXT NOT NULL, reason TEXT, status TEXT DEFAULT 'pending',
                 created_at TEXT, decided_by INTEGER);
+            CREATE TABLE IF NOT EXISTS roles (
+                employee_id INTEGER PRIMARY KEY, role TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS exreq_messages (
+                req_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL, text TEXT);
             """
         )
         # employees: branch_id ustuni
@@ -1366,3 +1371,77 @@ async def lesson_days_in_range(emp, day_from, day_to):
         except Exception:
             pass
     return out
+
+
+# ==================== Rollar: bo'lim rahbari / menejer ====================
+ROLE_NAMES = {"head": "Bo'lim rahbari", "manager": "Menejer"}
+
+
+async def _ensure_roles(db):
+    await db.execute("CREATE TABLE IF NOT EXISTS roles (employee_id INTEGER PRIMARY KEY, role TEXT NOT NULL)")
+
+
+async def set_role(emp_id, role):
+    """role: 'head' | 'manager' | None (olib tashlash)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_roles(db)
+        if role:
+            await db.execute("INSERT OR REPLACE INTO roles(employee_id, role) VALUES(?,?)", (emp_id, role))
+        else:
+            await db.execute("DELETE FROM roles WHERE employee_id=?", (emp_id,))
+        await db.commit()
+
+
+async def get_role(emp_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT role FROM roles WHERE employee_id=?", (emp_id,))
+            r = await cur.fetchone()
+            return r[0] if r else None
+    except Exception:
+        return None
+
+
+async def role_holders(role, dep_id=None):
+    """Shu roldagi faol xodimlar (bo'lim rahbari uchun dep_id bo'yicha)."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            q = ("SELECT e.* FROM employees e JOIN roles r ON r.employee_id=e.id "
+                 "WHERE r.role=? AND e.active=1")
+            args = [role]
+            if dep_id is not None:
+                q += " AND e.department_id=?"
+                args.append(dep_id)
+            cur = await db.execute(q + " ORDER BY LOWER(e.first_name)", args)
+            return [await _row_to_emp(r) for r in await cur.fetchall()]
+    except Exception:
+        return []
+
+
+async def all_roles():
+    out = []
+    for role in ("manager", "head"):
+        for e in await role_holders(role):
+            out.append((role, e))
+    return out
+
+
+# ==================== So'rov xabarlari (kimga yuborilgan) ====================
+async def add_exreq_message(req_id, chat_id, message_id, text):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS exreq_messages (req_id INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+                   message_id INTEGER NOT NULL, text TEXT)""")
+        await db.execute("INSERT INTO exreq_messages(req_id,chat_id,message_id,text) VALUES(?,?,?,?)",
+                         (req_id, chat_id, message_id, text))
+        await db.commit()
+
+
+async def exreq_messages_for(req_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT chat_id, message_id, text FROM exreq_messages WHERE req_id=?",
+                                   (req_id,))
+            return [{"chat_id": r[0], "message_id": r[1], "text": r[2]} for r in await cur.fetchall()]
+    except Exception:
+        return []

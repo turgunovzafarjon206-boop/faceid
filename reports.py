@@ -641,3 +641,13 @@ async def build_employees_excel():
     path = f"/tmp/Xodimlar_malumoti_{today}.xlsx"
     wb.save(path)
     return path
+
+
+async def day_fine(emp, day):
+    """Xodimning shu kungi jarimasi (so'm). Oy boshidan shu kungacha ketma-ketlik hisobga olinadi."""
+    if not emp.get("count_late"):
+        return 0
+    first, _ = _month_bounds(day)
+    series = await _late_series(emp, first, day)
+    info, _ = _apply_fines(series)
+    return info.get(day, (0, 0, 0))[0]
