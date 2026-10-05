@@ -114,6 +114,10 @@ class LessonImg(StatesGroup):
     photo = State()
 
 
+class AttXls(StatesGroup):
+    wait_file = State()
+
+
 def _month_range():
     now = dt.datetime.now(TZ)
     first = now.replace(day=1).strftime("%Y-%m-%d")
@@ -2389,3 +2393,96 @@ async def roles_list(cb: CallbackQuery):
         lines.append(f"{mark} {db.ROLE_NAMES[role]}: {db.full_name(e)}{dep}")
     await cb.message.answer("\n".join(lines))
     await cb.answer()
+
+
+# ==================== Kirish-chiqish Excel'dan to'ldirish ====================
+@router.callback_query(F.data == "a:attxls")
+async def att_xls_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(AttXls.wait_file)
+    await cb.message.answer(
+        "📥 Kirish-chiqish tabel faylini (.xlsx) yuboring.\n\n"
+        "• Har bir varaq — bitta xodim («Xodim:» qatoridagi ism bo'yicha moslanadi).\n"
+        "• <b>Bot o'zi yozgan vaqtlar ustun</b> — ular o'zgarmaydi.\n"
+        "• Bot yozmagan kirish yoki chiqish bo'lsa — fayldan to'ldiriladi.\n"
+        "• Faylni qayta yuklash xavfsiz: takrorlanmaydi, yangilanadi.",
+        reply_markup=kb.back_kb("a:fidback"))
+    await cb.answer()
+
+
+@router.message(AttXls.wait_file, F.document)
+async def att_xls_file(msg: Message, state: FSMContext):
+    doc = msg.document
+    if not (doc.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+        await msg.answer("❌ Faqat Excel (.xlsx) fayl yuboring.")
+        return
+    await state.clear()
+    wait = await msg.answer("⏳ Fayl o'qilmoqda...")
+    path = f"/tmp/att_{doc.file_unique_id}.xlsx"
+    await msg.bot.download(doc, destination=path)
+    import attendance_import
+    try:
+        sheets = attendance_import.parse_workbook(path)
+    except Exception as e:
+        await msg.answer(f"❌ Faylni o'qib bo'lmadi: {e}", reply_markup=kb.admin_menu())
+        return
+    if not sheets:
+        await msg.answer("❌ Faylda «Sana / Kelish vaqti / Ketish vaqti» jadvali topilmadi.",
+                         reply_markup=kb.admin_menu())
+        return
+
+    by_key = await db.employees_by_name_key()
+    name_count = {}
+    for sh in sheets:
+        k = db._name_key(sh["name"])
+        name_count[k] = name_count.get(k, 0) + 1
+
+    matched, unmatched, dup_file, dup_bot = 0, [], [], []
+    cnt = {"new": 0, "updated": 0, "same": 0, "bot": 0}
+    months = set()
+    for sh in sheets:
+        k = db._name_key(sh["name"])
+        if name_count[k] > 1:                 # faylda bir xil ismli bir nechta varaq
+            dup_file.append(sh["name"]); continue
+        emps = by_key.get(k, [])
+        if not emps:
+            if sh["rows"]:
+                unmatched.append(sh["name"])
+            continue
+        if len(emps) > 1:                     # botda bir xil ismli bir nechta xodim
+            dup_bot.append(sh["name"]); continue
+        emp = emps[0]
+        matched += 1
+        for day, kel, ket in sh["rows"]:
+            months.add(day[:7])
+            res = await db.fill_day_from_excel(emp["id"], day, kel, ket)
+            for v in res.values():
+                if v:
+                    cnt[v] += 1
+
+    try:
+        await wait.delete()
+    except Exception:
+        pass
+    mlabel = ", ".join(f"{reports.UZ_MONTHS[int(m[5:])]} {m[:4]}" for m in sorted(months)) or "—"
+    lines = [
+        "✅ <b>Tabel yuklandi</b>",
+        f"🗓 Davr: {mlabel}",
+        f"👥 Varaqlar: {len(sheets)} | moslandi: {matched}",
+        f"➕ Fayldan yangi to'ldirildi: {cnt['new']} ta vaqt",
+        f"✏️ Avvalgi fayl qiymati yangilandi: {cnt['updated']}",
+        f"🤖 Bot yozgani saqlandi (o'zgartirilmadi): {cnt['bot']}",
+        f"= O'zgarishsiz (avval yuklangan): {cnt['same']}",
+    ]
+    if unmatched:
+        lines.append(f"\n⚠️ Botda topilmadi ({len(unmatched)}): " + ", ".join(unmatched[:40]))
+        lines.append("   (Botdagi username fayldagi ism bilan bir xil bo'lishi kerak.)")
+    if dup_file:
+        lines.append(f"\n⚠️ Faylda bir xil ismli varaqlar — o'tkazib yuborildi: " + ", ".join(sorted(set(dup_file))))
+    if dup_bot:
+        lines.append(f"\n⚠️ Botda bir xil ismli xodimlar — o'tkazib yuborildi: " + ", ".join(dup_bot))
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3900):
+        await msg.answer(text[i:i + 3900],
+                         reply_markup=kb.admin_menu() if i + 3900 >= len(text) else None)

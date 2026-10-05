@@ -363,6 +363,11 @@ async def add_event(emp_id, ts: dt.datetime, external_id=None, event_type=None):
                 "INSERT INTO events (employee_id,event_type,ts,day,external_id) VALUES (?,?,?,?,?)",
                 (emp_id, event_type, ts.isoformat(), day, external_id),
             )
+            # Bot o'zi yozgan qayd ustun: Excel'dan to'ldirilgan shu turdagi qaydni olib tashlaymiz
+            if not str(external_id or "").startswith("xls-"):
+                await db.execute(
+                    "DELETE FROM events WHERE employee_id=? AND day=? AND event_type=? "
+                    "AND external_id LIKE 'xls-%'", (emp_id, day, event_type))
             await db.commit()
             return event_type, True
         except aiosqlite.IntegrityError:
@@ -1285,7 +1290,7 @@ async def lesson_context(emp):
     manual = await manual_lessons_for(emp["id"])
     return {
         "is_lesson": True,
-        "sched_name": await schedule_name_for_employee(emp),
+        "sched_name": None,   # Excel dars jadvali olib tashlandi — faqat rasm orqali belgilangan jadval
         "manual": manual,
         "manual_months": {d[:7] for d in manual},
     }
@@ -1445,3 +1450,53 @@ async def exreq_messages_for(req_id):
             return [{"chat_id": r[0], "message_id": r[1], "text": r[2]} for r in await cur.fetchall()]
     except Exception:
         return []
+
+
+# ==================== Excel'dan kirish/chiqish to'ldirish ====================
+def _name_key(name):
+    """Ism kaliti: kichik harf, apostroflarsiz, so'zlar tartibsiz ('Diyora Y.U' == 'Y.U Diyora')."""
+    s = str(name or "").lower()
+    for ch in "'`ʻʼ’‘":
+        s = s.replace(ch, "")
+    return " ".join(sorted(s.split()))
+
+
+async def employees_by_name_key():
+    """{ism_kaliti: [xodimlar]} — faqat aniq moslik uchun."""
+    out = {}
+    for e in await list_employees():
+        out.setdefault(_name_key(full_name(e)), []).append(e)
+    return out
+
+
+async def fill_day_from_excel(emp_id, day, kelish, ketish):
+    """Bot yozmagan turini Excel'dan to'ldiradi. Bot yozgan (yoki qo'lda kiritilgan) qayd o'zgarmaydi.
+    Qaytaradi: {'in': holat, 'out': holat}; holat: 'new' | 'updated' | 'same' | 'bot' | None."""
+    res = {"in": None, "out": None}
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT event_type, external_id, ts FROM events WHERE employee_id=? AND day=?", (emp_id, day))
+        rows = await cur.fetchall()
+        own = {t for t, ext, _ in rows if not str(ext or "").startswith("xls-")}
+        xls = {ext: ts for _, ext, ts in rows if str(ext or "").startswith("xls-")}
+        for etype, hm in (("in", kelish), ("out", ketish)):
+            if not hm:
+                continue
+            if etype in own:
+                res[etype] = "bot"
+                continue
+            ext = f"xls-{emp_id}-{day}-{etype}"
+            ts = f"{day}T{hm}:00"
+            if ext in xls:
+                if xls[ext] == ts:
+                    res[etype] = "same"
+                    continue
+                await db.execute("UPDATE events SET ts=? WHERE external_id=?", (ts, ext))
+                res[etype] = "updated"
+            else:
+                await db.execute(
+                    "INSERT INTO events (employee_id,event_type,ts,day,external_id) VALUES (?,?,?,?,?)",
+                    (emp_id, etype, ts, day, ext))
+                res[etype] = "new"
+        await db.commit()
+    return res
