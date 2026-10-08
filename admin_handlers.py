@@ -3,7 +3,7 @@ import datetime as dt
 import calendar
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -116,6 +116,7 @@ class LessonImg(StatesGroup):
 
 class AttXls(StatesGroup):
     wait_file = State()
+    bind_search = State()
 
 
 def _month_range():
@@ -2524,8 +2525,12 @@ async def att_xls_start(cb: CallbackQuery, state: FSMContext):
         "• Har bir varaq — bitta xodim («Xodim:» qatoridagi ism bo'yicha moslanadi).\n"
         "• <b>Bot o'zi yozgan vaqtlar ustun</b> — ular o'zgarmaydi.\n"
         "• Bot yozmagan kirish yoki chiqish bo'lsa — fayldan to'ldiriladi.\n"
-        "• Faylni qayta yuklash xavfsiz: takrorlanmaydi, yangilanadi.",
-        reply_markup=kb.back_kb("a:fidback"))
+        "• Faylni qayta yuklash xavfsiz: takrorlanmaydi, yangilanadi.\n"
+        "• Fayldagi ism botdagidan farq qilsa (masalan «Sattarova Nilufar Muxitdin qizi» ↔ "
+        "«Nilufar Sattarova») — bot o'zi moslaydi yoki sizdan so'raydi va eslab qoladi.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Bog'langan ismlar", callback_data="axl")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="a:fidback")]]))
     await cb.answer()
 
 
@@ -2556,21 +2561,37 @@ async def att_xls_file(msg: Message, state: FSMContext):
         k = db._name_key(sh["name"])
         name_count[k] = name_count.get(k, 0) + 1
 
-    matched, unmatched, dup_file, dup_bot = 0, [], [], []
+    matched, dup_file, dup_bot, auto = 0, [], [], []
+    pending = []                      # [(excel_ism, rows, [o'xshash xodimlar])]
     cnt = {"new": 0, "updated": 0, "same": 0, "bot": 0}
     months = set()
+    plan = []                         # [(sheet, emp)]
+    rest = []
     for sh in sheets:
         k = db._name_key(sh["name"])
         if name_count[k] > 1:                 # faylda bir xil ismli bir nechta varaq
             dup_file.append(sh["name"]); continue
         emps = by_key.get(k, [])
-        if not emps:
-            if sh["rows"]:
-                unmatched.append(sh["name"])
-            continue
         if len(emps) > 1:                     # botda bir xil ismli bir nechta xodim
             dup_bot.append(sh["name"]); continue
-        emp = emps[0]
+        if emps:
+            plan.append((sh, emps[0]))
+        elif sh["rows"]:
+            rest.append(sh)
+    # Aniq mos kelmaganlar: o'xshash ism bo'yicha (boshqa varaqqa tushmagan xodimlar orasidan)
+    used = {e["id"] for _, e in plan}
+    for sh in rest:
+        cands = await db.similar_employees(sh["name"], exclude_ids=used)
+        if len(cands) == 1:
+            emp = cands[0]
+            used.add(emp["id"])
+            await db.add_name_alias(sh["name"], emp["id"])   # keyingi safar darhol topiladi
+            auto.append((sh["name"], db.full_name(emp)))
+            plan.append((sh, emp))
+        else:
+            pending.append((sh["name"], sh["rows"], cands))
+
+    for sh, emp in plan:
         matched += 1
         for day, kel, ket in sh["rows"]:
             months.add(day[:7])
@@ -2593,9 +2614,12 @@ async def att_xls_file(msg: Message, state: FSMContext):
         f"🤖 Bot yozgani saqlandi (o'zgartirilmadi): {cnt['bot']}",
         f"= O'zgarishsiz (avval yuklangan): {cnt['same']}",
     ]
-    if unmatched:
-        lines.append(f"\n⚠️ Botda topilmadi ({len(unmatched)}): " + ", ".join(unmatched[:40]))
-        lines.append("   (Botdagi username fayldagi ism bilan bir xil bo'lishi kerak.)")
+    if auto:
+        lines.append(f"\n🔗 Ism farqli, o'zi moslandi ({len(auto)}):")
+        lines += [f"   • {a} → <b>{b}</b>" for a, b in auto[:40]]
+        lines.append("   (Xato bo'lsa: 📥 Kirish-chiqish yuklash → 🔗 Bog'langan ismlar)")
+    if pending:
+        lines.append(f"\n❓ Botdagi xodimga moslanmadi ({len(pending)}) — pastda tanlang 👇")
     if dup_file:
         lines.append(f"\n⚠️ Faylda bir xil ismli varaqlar — o'tkazib yuborildi: " + ", ".join(sorted(set(dup_file))))
     if dup_bot:
@@ -2604,208 +2628,129 @@ async def att_xls_file(msg: Message, state: FSMContext):
     for i in range(0, len(text), 3900):
         await msg.answer(text[i:i + 3900],
                          reply_markup=kb.admin_menu() if i + 3900 >= len(text) else None)
+    # Moslanmagan ismlar: admin botdagi xodimni tanlaydi
+    _XLS_PENDING[msg.from_user.id] = pending
+    for idx, (name, rows, cands) in enumerate(pending[:30]):
+        await msg.answer(_bind_text(name, rows, cands), reply_markup=_bind_kb(idx, cands))
+    if len(pending) > 30:
+        await msg.answer(f"… yana {len(pending) - 30} ta ism. Bularni tanlagach, faylni qayta yuklang.")
 
 
-# ==================== 🔗 Bir xil xodimlarni birlashtirish ====================
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+# --- Excel ismini botdagi xodimga bog'lash ---
+_XLS_PENDING = {}     # admin_id -> [(excel_ism, rows, cands)]
 
 
-class Merge(StatesGroup):
-    first = State()
-    second = State()
+def _bind_text(name, rows, cands):
+    hint = "O'xshashlari 👇" if cands else "O'xshash ism topilmadi — «🔍 Qidirish» bilan toping."
+    return (f"📄 Fayldagi ism: <b>{name}</b> ({len(rows)} kun)\n"
+            f"Botdagi qaysi xodim? {hint}")
 
 
-async def _emp_card(e, n):
-    st = await db.employee_stats(e["id"])
-    dep = await db.get_department(e["department_id"]) if e.get("department_id") else None
-    br = await db.get_branch(e["branch_id"]) if e.get("branch_id") else None
-    linked = "🟢 botga ulangan" if e.get("telegram_id") else "🔴 botga ulanmagan"
-    extra = []
-    if dep:
-        extra.append(f"🏢 {dep['name']}")
-    if br:
-        extra.append(f"🏬 {br['name']}")
-    last = f", oxirgi: {reports.uz_date(st['last_day'])}" if st["last_day"] else ""
-    return (f"{n}) 👤 <b>{db.full_name(e)}</b> — {linked}\n"
-            f"    📞 {e.get('phone') or '-'}" + (("  " + "  ".join(extra)) if extra else "") + "\n"
-            f"    📊 {st['events']} ta kirish/chiqish ({st['days']} kun){last}")
+def _bind_kb(idx, cands):
+    rows = [[InlineKeyboardButton(text=f"👤 {db.full_name(e)}"[:60], callback_data=f"axm:{idx}:{e['id']}")]
+            for e in cands[:8]]
+    rows.append([InlineKeyboardButton(text="🔍 Qidirish", callback_data=f"axs:{idx}"),
+                 InlineKeyboardButton(text="⏭ O'tkazib yuborish", callback_data=f"axk:{idx}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _keep_record(a, b, sa, sb):
-    """Qaysi yozuv qoladi: botga ulangani, bo'lmasa ma'lumoti ko'pi."""
-    if bool(a.get("telegram_id")) != bool(b.get("telegram_id")):
-        return (a, b) if a.get("telegram_id") else (b, a)
-    return (a, b) if sa["events"] >= sb["events"] else (b, a)
-
-
-def _merge_pair_kb(a_id, b_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Bitta odam — birlashtirish", callback_data=f"mg:y:{a_id}:{b_id}")],
-        [InlineKeyboardButton(text="❌ Boshqa-boshqa odamlar", callback_data=f"mg:n:{a_id}:{b_id}")],
-    ])
-
-
-def _merge_name_kb(a, b):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"«{db.full_name(a)}»"[:60], callback_data=f"mg:k:{a['id']}:{b['id']}:{a['id']}")],
-        [InlineKeyboardButton(text=f"«{db.full_name(b)}»"[:60], callback_data=f"mg:k:{a['id']}:{b['id']}:{b['id']}")],
-        [InlineKeyboardButton(text="🔙 Bekor qilish", callback_data=f"mg:x")],
-    ])
-
-
-@router.callback_query(F.data == "a:merge")
-async def merge_start(cb: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("axs:"))
+async def att_bind_search_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    await state.clear()
-    await cb.answer()
-    pairs = await db.find_duplicate_candidates(limit=60)
-    manual_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Qo'lda tanlash (2 ta xodimni qidirib)", callback_data="mg:manual")]])
-    if not pairs:
-        await cb.message.answer("✅ O'xshash ismli xodimlar topilmadi.\n"
-                                "Agar bilsangiz — qo'lda tanlab birlashtirishingiz mumkin:",
-                                reply_markup=manual_kb)
-        return
-    show = pairs[:15]
-    await cb.message.answer(
-        f"🔗 O'xshash ismli {len(pairs)} ta juftlik topildi.\n"
-        "Har birini tekshiring: bitta odam bo'lsa — «✅ Birlashtirish», bo'lmasa — «❌ Boshqa-boshqa».\n\n"
-        "Birlashtirilganda barcha kirish/chiqish, jarima, ma'lumotlar bitta xodimga o'tadi. "
-        "Ikkinchi ism eslab qolinadi — FaceID shu ism bilan yozsa ham to'g'ri xodimga tushadi.")
-    for a, b in show:
-        text = await _emp_card(a, 1) + "\n\n" + await _emp_card(b, 2)
-        await cb.message.answer(text, reply_markup=_merge_pair_kb(a["id"], b["id"]))
-    more = f"\n\nYana {len(pairs) - len(show)} ta juftlik bor — bularni hal qilgach, qayta bosing." \
-        if len(pairs) > len(show) else ""
-    await cb.message.answer("Ro'yxatda yo'q bo'lsa — qo'lda tanlang:" + more, reply_markup=manual_kb)
-
-
-@router.callback_query(F.data.startswith("mg:n:"))
-async def merge_no(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer()
-    _, _, a, b = cb.data.split(":")
-    await db.ignore_merge_pair(a, b)
-    try:
-        await cb.message.edit_text(cb.message.html_text + "\n\n❌ <i>Boshqa-boshqa odamlar deb belgilandi.</i>")
-    except Exception:
-        pass
-    await cb.answer("Belgilandi")
-
-
-@router.callback_query(F.data.startswith("mg:y:"))
-async def merge_yes(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer()
-    _, _, a_id, b_id = cb.data.split(":")
-    a, b = await db.get_employee_by_id(int(a_id)), await db.get_employee_by_id(int(b_id))
-    if not a or not b:
-        return await cb.answer("Bu juftlik allaqachon birlashtirilgan", show_alert=True)
-    await cb.message.answer(
-        f"🔗 <b>{db.full_name(a)}</b> + <b>{db.full_name(b)}</b>\n"
-        "Botda qaysi ism ko'rinsin? (ikkinchisi ham eslab qolinadi)",
-        reply_markup=_merge_name_kb(a, b))
+    idx = int(cb.data.split(":")[1])
+    items = _XLS_PENDING.get(cb.from_user.id) or []
+    if idx >= len(items):
+        return await cb.answer("Faylni qayta yuklang", show_alert=True)
+    await state.set_state(AttXls.bind_search)
+    await state.update_data(ax_idx=idx)
+    await cb.message.answer(f"🔍 «{items[idx][0]}» uchun botdagi xodim ismini yozing (kirill/lotin):")
     await cb.answer()
 
 
-@router.callback_query(F.data == "mg:x")
-async def merge_cancel(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    try:
-        await cb.message.edit_text("Bekor qilindi.")
-    except Exception:
-        pass
-    await cb.answer()
+@router.message(AttXls.bind_search, F.text)
+async def att_bind_search(msg: Message, state: FSMContext):
+    idx = (await state.get_data()).get("ax_idx", 0)
+    found = await db.search_employees(msg.text, linked_only=False)
+    if not found:
+        return await msg.answer("Topilmadi. Qaytadan yozing:")
+    await state.set_state(None)
+    rows = [[InlineKeyboardButton(text=f"👤 {db.full_name(e)}"[:60], callback_data=f"axm:{idx}:{e['id']}")]
+            for e in found[:15]]
+    await msg.answer("Xodimni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@router.callback_query(F.data.startswith("mg:k:"))
-async def merge_do(cb: CallbackQuery):
+@router.callback_query(F.data.startswith("axm:"))
+async def att_bind_pick(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    _, _, a_id, b_id, name_id = cb.data.split(":")
-    a, b = await db.get_employee_by_id(int(a_id)), await db.get_employee_by_id(int(b_id))
-    if not a or not b:
-        return await cb.answer("Bu juftlik allaqachon birlashtirilgan", show_alert=True)
-    sa, sb = await db.employee_stats(a["id"]), await db.employee_stats(b["id"])
-    keep, drop = _keep_record(a, b, sa, sb)
-    keep_name = db.full_name(a if int(name_id) == a["id"] else b)
-    other_name = db.full_name(b if int(name_id) == a["id"] else a)
-    moved = await db.merge_employees(keep["id"], drop["id"], keep_name=keep_name)
-    merged = await db.get_employee_by_id(keep["id"])
-    st = await db.employee_stats(keep["id"])
-    linked = "🟢 botga ulangan" if merged.get("telegram_id") else "🔴 botga hali ulanmagan"
-    text = (f"✅ Birlashtirildi: <b>{keep_name}</b> ({linked})\n"
-            f"🔁 «{other_name}» ismi eslab qolindi — FaceID/Excel shu ism bilan yozsa ham "
-            f"shu xodimga tushadi.\n"
-            f"📊 Endi jami: {st['events']} ta kirish/chiqish ({st['days']} kun); "
-            f"ko'chirildi: {moved.get('events', 0)} ta.")
+    _, idx, emp_id = cb.data.split(":")
+    items = _XLS_PENDING.get(cb.from_user.id) or []
+    idx = int(idx)
+    if idx >= len(items):
+        return await cb.answer("Faylni qayta yuklang", show_alert=True)
+    name, rows, _ = items[idx]
+    emp = await db.get_employee_by_id(int(emp_id))
+    if not emp:
+        return await cb.answer("Xodim topilmadi", show_alert=True)
+    await db.add_name_alias(name, emp["id"])
+    cnt = {"new": 0, "updated": 0, "same": 0, "bot": 0}
+    for day, kel, ket in rows:
+        res = await db.fill_day_from_excel(emp["id"], day, kel, ket)
+        for v in res.values():
+            if v:
+                cnt[v] += 1
+    text = (f"✅ «{name}» → <b>{db.full_name(emp)}</b> bog'landi va eslab qolindi.\n"
+            f"➕ Yangi: {cnt['new']}  ✏️ Yangilandi: {cnt['updated']}  "
+            f"🤖 Bot yozgani saqlandi: {cnt['bot']}  = O'zgarishsiz: {cnt['same']}")
     try:
         await cb.message.edit_text(text)
     except Exception:
         await cb.message.answer(text)
-    await cb.answer("Birlashtirildi ✅")
+    await cb.answer("Bog'landi ✅")
 
 
-# --- Qo'lda tanlash ---
-def _merge_pick_kb(found, step):
-    rows = [[InlineKeyboardButton(
-        text=f"{'🟢' if e.get('telegram_id') else '🔴'} {db.full_name(e)} ({e.get('phone') or '-'})"[:60],
-        callback_data=f"mgp{step}:{e['id']}")] for e in found[:20]]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-@router.callback_query(F.data == "mg:manual")
-async def merge_manual(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer()
-    await state.set_state(Merge.first)
-    await cb.message.answer("1️⃣ Birinchi xodim ismini yozing (kirill yoki lotinda):")
+@router.callback_query(F.data.startswith("axk:"))
+async def att_bind_skip(cb: CallbackQuery):
+    try:
+        await cb.message.edit_text(cb.message.html_text + "\n\n⏭ <i>O'tkazib yuborildi.</i>")
+    except Exception:
+        pass
     await cb.answer()
 
 
-@router.message(Merge.first, F.text)
-async def merge_first_search(msg: Message, state: FSMContext):
-    found = await db.search_employees(msg.text, linked_only=False)
-    if not found:
-        return await msg.answer("Topilmadi. Qaytadan yozing:")
-    await msg.answer("Birinchi xodimni tanlang:", reply_markup=_merge_pick_kb(found, 1))
-
-
-@router.callback_query(F.data.startswith("mgp1:"))
-async def merge_first_pick(cb: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "axl")
+async def att_alias_list(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    e = await db.get_employee_by_id(int(cb.data.split(":")[1]))
-    await state.update_data(mg_a=e["id"])
-    await state.set_state(Merge.second)
-    await cb.message.answer(f"1️⃣ {db.full_name(e)}\n\n2️⃣ Endi ikkinchi xodim ismini yozing:")
+    items = await db.list_name_aliases()
+    if not items:
+        await cb.message.answer("🔗 Hali bog'langan Excel ismlari yo'q.")
+        return await cb.answer()
+    lines = ["🔗 <b>Excel ism → botdagi xodim</b>", "Noto'g'ri bog'langanini ❌ bilan o'chiring "
+             "(keyingi yuklashda bot qaytadan so'raydi):", ""]
+    rows = []
+    for i, (k, alias, emp) in enumerate(items[:60], 1):
+        lines.append(f"{i}. {alias} → <b>{db.full_name(emp)}</b>")
+        rows.append([InlineKeyboardButton(text=f"❌ {i}. {alias}"[:60], callback_data=f"axd:{_hashlib.md5(k.encode()).hexdigest()[:12]}")])
+    await cb.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await cb.answer()
 
 
-@router.message(Merge.second, F.text)
-async def merge_second_search(msg: Message, state: FSMContext):
-    data = await state.get_data()
-    found = [e for e in await db.search_employees(msg.text, linked_only=False) if e["id"] != data.get("mg_a")]
-    if not found:
-        return await msg.answer("Topilmadi. Qaytadan yozing:")
-    await msg.answer("Ikkinchi xodimni tanlang:", reply_markup=_merge_pick_kb(found, 2))
-
-
-@router.callback_query(F.data.startswith("mgp2:"))
-async def merge_second_pick(cb: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("axd:"))
+async def att_alias_delete(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    data = await state.get_data()
-    await state.clear()
-    a = await db.get_employee_by_id(int(data.get("mg_a") or 0))
-    b = await db.get_employee_by_id(int(cb.data.split(":")[1]))
-    if not a or not b or a["id"] == b["id"]:
-        return await cb.answer("Qaytadan boshlang", show_alert=True)
-    if a.get("telegram_id") and b.get("telegram_id") and a["telegram_id"] != b["telegram_id"]:
-        await cb.message.answer("⚠️ Ikkalasi ham boshqa-boshqa Telegram akkauntga ulangan. "
-                                "Birlashtirilsa, birinchisining akkaunti qoladi.")
-    text = await _emp_card(a, 1) + "\n\n" + await _emp_card(b, 2)
-    await cb.message.answer(text + "\n\nBotda qaysi ism ko'rinsin? (ikkinchisi ham eslab qolinadi)",
-                            reply_markup=_merge_name_kb(a, b))
-    await cb.answer()
+    key = cb.data[4:]
+    items = await db.list_name_aliases()
+    full = next((k for k, _, _ in items if _hashlib.md5(k.encode()).hexdigest()[:12] == key), None)
+    if full:
+        await db.remove_name_alias(full)
+    await cb.answer("O'chirildi ✅" if full else "Topilmadi")
+    items = await db.list_name_aliases()
+    rows = [[InlineKeyboardButton(text=f"❌ {i}. {alias}"[:60], callback_data=f"axd:{_hashlib.md5(k.encode()).hexdigest()[:12]}")]
+            for i, (k, alias, emp) in enumerate(items[:60], 1)]
+    try:
+        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        pass
