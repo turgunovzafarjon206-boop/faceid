@@ -48,6 +48,56 @@ class ResetStateMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+def _menu_signature():
+    """Menyu tugmalari matnlaridan imzo — tugmalar o'zgarsa, imzo ham o'zgaradi."""
+    import hashlib
+    import keyboards as kb
+    texts = []
+    for mk in (kb.user_menu(), kb.admin_menu()):
+        for row in mk.keyboard:
+            texts.append("|".join(b.text for b in row))
+    return hashlib.md5("\n".join(texts).encode()).hexdigest()[:12]
+
+
+async def refresh_menus(bot, note="🔄 Bot yangilandi — menyu yangilandi, yangi tugmalar pastda."):
+    """Barcha ulangan xodim va adminlarga yangi menyuni yuboradi. Qaytaradi: (yuborildi, xato)."""
+    import keyboards as kb
+    admins = set(admin_handlers.all_admin_ids())
+    targets = {}
+    for e in await db.list_employees(active_only=True):
+        if e.get("telegram_id"):
+            targets[int(e["telegram_id"])] = "user"
+    for a in admins:
+        targets[int(a)] = "admin"
+    ok = fail = 0
+    for chat_id, kind in targets.items():
+        markup = kb.admin_menu() if kind == "admin" else kb.user_menu()
+        try:
+            await bot.send_message(chat_id, note, reply_markup=markup, disable_notification=True)
+            ok += 1
+        except Exception as ex:
+            fail += 1
+            log.info("Menyu yuborilmadi %s: %s", chat_id, ex)
+        await asyncio.sleep(0.07)   # Telegram limiti (~15 xabar/soniya)
+    return ok, fail
+
+
+async def auto_refresh_menus(bot):
+    """Deploy'dan keyin menyu tugmalari o'zgargan bo'lsa — hammaga avtomatik yangilaydi."""
+    try:
+        await asyncio.sleep(5)
+        sig = _menu_signature()
+        old = await db.get_setting("menu_signature")
+        if old == sig:
+            log.info("Menyu o'zgarmagan — avtomatik yangilash shart emas.")
+            return
+        ok, fail = await refresh_menus(bot)
+        await db.set_setting("menu_signature", sig)
+        log.info("✅ Menyu hammaga yangilandi: %s ta yuborildi, %s ta xato", ok, fail)
+    except Exception as e:
+        log.warning("Menyuni avtomatik yangilashda xato: %s", e)
+
+
 async def main():
     await db.init_db()
     import os
@@ -95,6 +145,20 @@ async def main():
     # Fon jarayonlari
     asyncio.create_task(faceid_poller(bot))
     asyncio.create_task(daily_report_loop(bot))
+    asyncio.create_task(auto_refresh_menus(bot))
+
+    # Admin: /yangilash — menyuni hammaga qo'lda yangilash
+    from aiogram.filters import Command
+
+    @dp.message(Command("yangilash"))
+    async def cmd_refresh(msg: Message):
+        if not admin_handlers.is_admin(msg.from_user.id):
+            return
+        await msg.answer("⏳ Menyu hammaga yuborilmoqda...")
+        ok, fail = await refresh_menus(msg.bot)
+        await db.set_setting("menu_signature", _menu_signature())
+        await msg.answer(f"✅ Menyu yangilandi: {ok} ta odamga yuborildi"
+                         + (f", {fail} tasiga yetmadi (botni bloklagan bo'lishi mumkin)." if fail else "."))
 
     # Userbot (guruhni o'qish) — sozlangan bo'lsa ishga tushadi
     try:
@@ -117,6 +181,7 @@ async def main():
             BotCommand(command="jarima", description="Filial jarimalari (admin)"),
             BotCommand(command="jamoa", description="Filial xodimlari (admin)"),
             BotCommand(command="id", description="Telegram ID"),
+            BotCommand(command="yangilash", description="Menyuni hammaga yangilash (admin)"),
         ], scope=BotCommandScopeAllPrivateChats())
     except Exception as e:
         log.warning("Buyruqlar menyusini o'rnatib bo'lmadi: %s", e)

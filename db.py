@@ -817,17 +817,62 @@ async def eligible_linked_for_survey(survey):
     return [e for e in emps if _emp_matches_dep(e, survey["dep_id"])]
 
 
+_CYR2LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo", "ж": "j",
+    "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
+    "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "x", "ц": "ts",
+    "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "", "ы": "i", "ь": "", "э": "e", "ю": "yu",
+    "я": "ya", "ў": "o", "қ": "q", "ғ": "g", "ҳ": "h", "і": "i",
+}
+_VOWELS = set("аеёиоуыэюяўaeiou")
+_APOS = "'`ʻʼ‘’´\""
+
+
+def translit(text):
+    """Kirill -> Lotin (o'zbekcha). Lotin matn o'zgarmaydi."""
+    t = (text or "").lower()
+    out = []
+    prev = ""
+    for ch in t:
+        if ch == "е" and (not prev or not prev.isalpha() or prev in _VOWELS or prev in "ъь"):
+            out.append("ye")          # Евгений -> Yevgeniy, Абдуллаев -> Abdullayev
+        elif ch in _CYR2LAT:
+            out.append(_CYR2LAT[ch])
+        else:
+            out.append(ch)
+        prev = ch
+    return "".join(out)
+
+
+def search_key(text):
+    """Qidiruv uchun yumshoq kalit: kirill/lotin, apostrof, q/k, x/h farqlari e'tiborsiz."""
+    t = translit(text)
+    for a in _APOS:
+        t = t.replace(a, "")
+    t = t.replace("dj", "j").replace("kh", "x")
+    t = t.replace("sh", "\x01").replace("ch", "\x02")
+    t = t.replace("h", "x").replace("q", "k")
+    t = t.replace("\x01", "sh").replace("\x02", "ch")
+    return " ".join(t.split())
+
+
 async def search_employees(query, linked_only=True):
-    """Ism (username) yoki telefon bo'yicha xodim qidiradi."""
-    q = f"%{query.strip().lower()}%"
-    async with aiosqlite.connect(DB_PATH) as db:
-        sql = ("SELECT * FROM employees WHERE active=1 AND "
-               "(LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ? OR phone LIKE ?)")
-        if linked_only:
-            sql += " AND telegram_id IS NOT NULL"
-        sql += " ORDER BY LOWER(first_name) LIMIT 30"
-        cur = await db.execute(sql, (q, q, q))
-        return [await _row_to_emp(r) for r in await cur.fetchall()]
+    """Ism (username) yoki telefon bo'yicha qidiradi. Kirill yoki lotinda yozilsa ham topadi."""
+    key = search_key(query)
+    digits = "".join(c for c in (query or "") if c.isdigit())
+    if not key:
+        return []
+    out = []
+    for e in await list_employees(active_only=True):
+        if linked_only and not e.get("telegram_id"):
+            continue
+        name_key = search_key(f"{e.get('first_name') or ''} {e.get('last_name') or ''}")
+        phone = "".join(c for c in str(e.get("phone") or "") if c.isdigit())
+        if key in name_key or (len(digits) >= 3 and digits in phone):
+            out.append(e)
+        if len(out) >= 30:
+            break
+    return out
 
 
 # ==================== Kechikishni hisoblamaslik (kechirim) ====================
@@ -903,7 +948,15 @@ async def remove_exemption(emp_id, day):
 async def set_manual_attendance(emp_id, day, kirish_hm, chiqish_hm):
     """Berilgan kun uchun kirish/chiqishni qo'lda o'rnatadi (eski qaydlarni almashtiradi)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM events WHERE employee_id=? AND day=?", (emp_id, day))
+        # Faqat kiritilgan tur almashtiriladi (faqat Kirish berilsa — Chiqish saqlanib qoladi)
+        if kirish_hm and chiqish_hm:
+            await db.execute("DELETE FROM events WHERE employee_id=? AND day=?", (emp_id, day))
+        elif kirish_hm:
+            await db.execute("DELETE FROM events WHERE employee_id=? AND day=? AND event_type='in'",
+                             (emp_id, day))
+        elif chiqish_hm:
+            await db.execute("DELETE FROM events WHERE employee_id=? AND day=? AND event_type='out'",
+                             (emp_id, day))
         if kirish_hm:
             ts = f"{day}T{kirish_hm}:00"
             await db.execute(

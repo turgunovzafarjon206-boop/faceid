@@ -1528,31 +1528,89 @@ async def exempt_time(msg: Message, state: FSMContext):
         "Bir nechta kun: vergul bilan yoki oraliq <code>2026-09-06..2026-09-10</code>")
 
 
+_DAY_RE = None
+
+
 def _parse_days(text):
-    """Matndan sanalarni ajratadi: vergul/probel bilan yoki 'A..B' oralig'i."""
-    days, bad = [], []
-    chunks = [c.strip() for c in text.replace(",", " ").split() if c.strip()]
-    for ch in chunks:
-        if ".." in ch:
-            a, b = ch.split("..", 1)
-            try:
-                d1 = dt.datetime.strptime(a.strip(), "%Y-%m-%d")
-                d2 = dt.datetime.strptime(b.strip(), "%Y-%m-%d")
-            except ValueError:
-                bad.append(ch)
-                continue
-            if d2 < d1:
-                d1, d2 = d2, d1
-            cur = d1
-            while cur <= d2 and len(days) < 120:
-                days.append(cur.strftime("%Y-%m-%d"))
-                cur += dt.timedelta(days=1)
-        else:
-            try:
-                days.append(dt.datetime.strptime(ch, "%Y-%m-%d").strftime("%Y-%m-%d"))
-            except ValueError:
-                bad.append(ch)
-    return days, bad
+    """Matndan sanalarni ajratadi. Qabul qilinadi (aralash ham bo'ladi):
+       2026-09-06 · 2026-09-06..2026-09-10 · 6.09 · 06.09.2026 ·
+       6-sentyabr · 6 sentyabr · 6-10 sentyabr · 6, 7, 8 sentyabr · 6 7 8
+       (oy yozilmagan sonlar — keyingi/oldingi yozilgan oyga, bo'lmasa joriy oyga tegishli)."""
+    global _DAY_RE
+    import group_handlers
+    if _DAY_RE is None:
+        _DAY_RE = _re.compile(
+            r"(?P<iso1>\d{4}-\d{1,2}-\d{1,2})(?:\s*\.\.\s*(?P<iso2>\d{4}-\d{1,2}-\d{1,2}))?"
+            r"|(?P<dd>\d{1,2})\.(?P<mm>\d{1,2})(?:\.(?P<yy>\d{2,4}))?(?!\d)"
+            r"|(?P<n1>\d{1,2})(?:\s*(?:\.\.|-|–|—)\s*(?P<n2>\d{1,2})(?!\d))?"
+            r"(?:\s*-?\s*(?P<mw>[^\W\d_][\w'ʻʼ‘’`]*))?")
+    today = dt.datetime.now(TZ).date()
+    year = today.year
+    items, bad = [], []   # items: (kind, payload) ; kind: 'days' | 'nums' | 'month'
+    pos = 0
+    t = text or ""
+    for m in _DAY_RE.finditer(t):
+        gap = t[pos:m.start()]
+        if _re.sub(r"[\s,;]+", "", gap):
+            bad.append(gap.strip(" ,;"))
+        pos = m.end()
+        try:
+            if m.group("iso1"):
+                d1 = dt.datetime.strptime(m.group("iso1"), "%Y-%m-%d").date()
+                d2 = dt.datetime.strptime(m.group("iso2"), "%Y-%m-%d").date() if m.group("iso2") else d1
+                items.append(("days", (d1, d2)))
+            elif m.group("dd"):
+                yy = m.group("yy")
+                y = int(yy) + (2000 if yy and len(yy) == 2 else 0) if yy else year
+                d = dt.date(y, int(m.group("mm")), int(m.group("dd")))
+                items.append(("days", (d, d)))
+            else:
+                a = int(m.group("n1"))
+                b = int(m.group("n2")) if m.group("n2") else a
+                mw = m.group("mw")
+                month = None
+                if mw:
+                    month = group_handlers._month_from_word(mw)
+                    if not month:
+                        bad.append(m.group(0).strip())
+                        continue
+                items.append(("nums", (a, b, month, m.group(0).strip())))
+        except ValueError:
+            bad.append(m.group(0).strip())
+    tail = t[pos:]
+    if _re.sub(r"[\s,;]+", "", tail):
+        bad.append(tail.strip(" ,;"))
+
+    # Oy yozilmagan sonlarga oy biriktirish: avval keyingi, so'ng oldingi oy
+    months = [it[1][2] if it[0] == "nums" else None for it in items]
+    resolved = []
+    for i, (kind, pl) in enumerate(items):
+        if kind == "days":
+            resolved.append(pl)
+            continue
+        a, b, month, raw = pl
+        if not month:
+            month = next((x for x in months[i + 1:] if x), None) or \
+                next((x for x in reversed(months[:i]) if x), None) or today.month
+        try:
+            d1, d2 = dt.date(year, month, min(a, b)), dt.date(year, month, max(a, b))
+        except ValueError:
+            bad.append(raw)
+            continue
+        resolved.append((d1, d2))
+
+    days = []
+    for d1, d2 in resolved:
+        if d2 < d1:
+            d1, d2 = d2, d1
+        cur = d1
+        while cur <= d2 and len(days) < 120:
+            iso = cur.isoformat()
+            if iso not in days:
+                days.append(iso)
+            cur += dt.timedelta(days=1)
+    days.sort()
+    return days, [b for b in bad if b]
 
 
 @router.message(Exempt.dates, F.text)
@@ -1699,20 +1757,80 @@ async def settime_pick(cb: CallbackQuery, state: FSMContext):
     emp = await db.get_employee_by_id(int(cb.data.split(":")[1]))
     await state.update_data(st_emp=emp["id"], st_name=db.full_name(emp))
     await state.set_state(SetTime.date)
-    await cb.message.answer(f"👤 {db.full_name(emp)}\nSana kiriting (YYYY-MM-DD):")
+    await cb.message.answer(
+        f"👤 {db.full_name(emp)}\n"
+        "📅 Kun(lar)ni yozing — bittasini yoki bir nechtasini birdaniga:\n"
+        "• <code>6-sentyabr</code>\n"
+        "• <code>6, 7, 9 sentyabr</code>\n"
+        "• <code>6-10 sentyabr</code> (oraliq)\n"
+        "• <code>2026-09-06</code> yoki <code>6.09</code>\n\n"
+        "Har kunga boshqa vaqt kerak bo'lsa — har qatorga kun va vaqtni yozing:\n"
+        "<code>6-sentyabr Kirish: 8:50 Chiqish: 19:00\n"
+        "7-sentyabr Kirish: 9:05</code>")
     await cb.answer()
+
+
+_TIME_WORD_RE = _re.compile(
+    r"(kir\w*|chiq\w*|кир\w*|чиқ\w*|чик\w*)\s*:?\s*\d{1,2}[:.]\d{2}", _re.IGNORECASE)
+
+
+def _days_label(days):
+    if len(days) <= 6:
+        return ", ".join(reports.uz_date(d) for d in days)
+    return f"{reports.uz_date(days[0])} … {reports.uz_date(days[-1])} ({len(days)} kun)"
+
+
+def _norm_time_words(text):
+    t = text
+    for a, b in (("кириш", "kirish"), ("Кириш", "Kirish"), ("КИРИШ", "kirish"),
+                 ("чиқиш", "chiqish"), ("Чиқиш", "Chiqish"), ("чикиш", "chiqish"),
+                 ("Чикиш", "Chiqish"), ("ЧИҚИШ", "chiqish")):
+        t = t.replace(a, b)
+    return t
 
 
 @router.message(SetTime.date, F.text)
 async def settime_date(msg: Message, state: FSMContext):
-    try:
-        day = dt.datetime.strptime(msg.text.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
-    except ValueError:
-        await msg.answer("❌ Noto'g'ri format. Masalan: 2026-09-06")
+    data = await state.get_data()
+    text = _norm_time_words(msg.text or "")
+    # 1) Qatorma-qator: har qatorda kun + vaqt
+    if _TIME_WORD_RE.search(text):
+        plan, errors = [], []
+        for line in [l for l in text.splitlines() if l.strip()]:
+            kh, ch = _parse_times(line)
+            day_part = _TIME_WORD_RE.sub(" ", line)
+            days, bad = _parse_days(day_part)
+            if not days or (not kh and not ch) or bad:
+                errors.append(line.strip())
+                continue
+            for d in days:
+                plan.append((d, kh, ch))
+        if not plan:
+            await msg.answer("❌ Tushunilmadi. Masalan:\n"
+                             "<code>6-sentyabr Kirish: 8:50 Chiqish: 19:00</code>")
+            return
+        for d, kh, ch in plan:
+            await db.set_manual_attendance(data["st_emp"], d, kh, ch)
+        await state.clear()
+        lines = [f"• {reports.uz_date(d)} — Kirish: {kh or '-'}  Chiqish: {ch or '-'}"
+                 for d, kh, ch in plan[:40]]
+        more = f"\n… va yana {len(plan) - 40} kun" if len(plan) > 40 else ""
+        err = ("\n\n⚠️ Tushunilmagan qatorlar (saqlanmadi):\n" + "\n".join(errors)) if errors else ""
+        await msg.answer(f"✅ {data['st_name']} — {len(plan)} kun yangilandi:\n"
+                         + "\n".join(lines) + more + err, reply_markup=kb.admin_menu())
         return
-    await state.update_data(st_day=day)
+
+    # 2) Faqat kunlar — keyin bitta vaqt hammasiga
+    days, bad = _parse_days(text)
+    if not days:
+        await msg.answer("❌ Sana tushunilmadi. Masalan: <code>6, 7, 9 sentyabr</code> "
+                         "yoki <code>6-10 sentyabr</code>")
+        return
+    await state.update_data(st_days=days)
     await state.set_state(SetTime.times)
-    await msg.answer("Vaqtni kiriting. Masalan:\n"
+    note = f"\n⚠️ Tushunilmadi (tashlab ketildi): {', '.join(bad)}" if bad else ""
+    await msg.answer(f"📅 Tanlangan kunlar ({len(days)} ta): {_days_label(days)}{note}\n\n"
+                     "Vaqtni kiriting (hamma tanlangan kunlarga qo'yiladi). Masalan:\n"
                      "«Kirish: 8:50 Chiqish: 19:00»\n"
                      "yoki faqat «Kirish: 8:50» yoki faqat «Chiqish: 19:00»")
 
@@ -1720,18 +1838,18 @@ async def settime_date(msg: Message, state: FSMContext):
 @router.message(SetTime.times, F.text)
 async def settime_apply(msg: Message, state: FSMContext):
     data = await state.get_data()
-    kh, ch = _parse_times(msg.text)
+    kh, ch = _parse_times(_norm_time_words(msg.text))
     if not kh and not ch:
         await msg.answer("❌ Vaqt topilmadi. Masalan: Kirish: 8:50 Chiqish: 19:00")
         return
-    await db.set_manual_attendance(data["st_emp"], data["st_day"], kh, ch)
+    days = data.get("st_days") or ([data["st_day"]] if data.get("st_day") else [])
+    for d in days:
+        await db.set_manual_attendance(data["st_emp"], d, kh, ch)
     await state.clear()
-    parts = []
-    parts.append(f"Kirish: {kh}" if kh else "Kirish: -")
-    parts.append(f"Chiqish: {ch}" if ch else "Chiqish: -")
     await msg.answer(
-        f"✅ {data['st_name']} — {data['st_day']}\n" + "  ".join(parts) +
-        "\nVaqt yangilandi.", reply_markup=kb.admin_menu())
+        f"✅ {data['st_name']} — {len(days)} kun: {_days_label(days)}\n"
+        f"Kirish: {kh or '-'}  Chiqish: {ch or '-'}\nVaqt yangilandi.",
+        reply_markup=kb.admin_menu())
 
 
 # ==================== Dars jadvali (HolliHop) ====================

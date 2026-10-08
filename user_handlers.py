@@ -284,21 +284,68 @@ def _parse_uz_day(text):
         return None
 
 
+def _exreq_months_kb(year):
+    today = dt.datetime.now(TZ).date()
+    return kb.cal_months_kb("xr", year, max_ym=today.strftime("%Y-%m"), min_year=today.year - 1)
+
+
 @router.message(F.text == "📝 Jarima hisoblamaslik so'rash")
 async def exreq_start(msg: Message, state: FSMContext):
     if not await _need_emp(msg):
         return
     await state.set_state(UserState.exreq_date)
-    await msg.answer("📝 Qaysi kun uchun jarima hisoblanmasligini so'raysiz?\n"
-                     "Sanani shunday yozing: <code>2-sentyabr</code>\n"
-                     "(yil avtomatik — joriy yil olinadi)")
+    year = dt.datetime.now(TZ).year
+    await msg.answer(f"📝 Qaysi kun uchun jarima hisoblanmasligini so'raysiz?\n"
+                     f"🗓 Oyni tanlang ({year}):",
+                     reply_markup=_exreq_months_kb(year))
+
+
+@router.callback_query(F.data.startswith("xry:"))
+async def exreq_year(cb: CallbackQuery, state: FSMContext):
+    year = int(cb.data.split(":")[1])
+    await state.set_state(UserState.exreq_date)
+    try:
+        await cb.message.edit_text(f"📝 Qaysi kun uchun jarima hisoblanmasligini so'raysiz?\n"
+                                   f"🗓 Oyni tanlang ({year}):",
+                                   reply_markup=_exreq_months_kb(year))
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("xrm:"))
+async def exreq_month(cb: CallbackQuery, state: FSMContext):
+    ym = cb.data.split(":")[1]
+    y, m = int(ym[:4]), int(ym[5:7])
+    await state.set_state(UserState.exreq_date)
+    today = dt.datetime.now(TZ).date().isoformat()
+    try:
+        await cb.message.edit_text(f"🗓 {reports.UZ_MONTHS[m].capitalize()} {y} — kunni tanlang:",
+                                   reply_markup=kb.cal_days_kb("xr", ym, max_day=today))
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("xrd:"))
+async def exreq_day_pick(cb: CallbackQuery, state: FSMContext):
+    day = cb.data.split(":")[1]
+    await state.update_data(exreq_day=day)
+    await state.set_state(UserState.exreq_reason)
+    try:
+        await cb.message.edit_text(f"📅 Tanlangan kun: {reports.uz_date(day)}")
+    except Exception:
+        pass
+    await cb.message.answer(f"📅 {reports.uz_date(day)}\nEndi sababini yozing:")
+    await cb.answer()
 
 
 @router.message(UserState.exreq_date, F.text)
 async def exreq_date(msg: Message, state: FSMContext):
+    # Qo'lda yozilsa ham qabul qilinadi (masalan: 2-sentyabr)
     day = _parse_uz_day(msg.text)
     if not day:
-        await msg.answer("❌ Sanani faqat shu ko'rinishda yozing: <code>2-sentyabr</code>")
+        await msg.answer("👆 Iltimos, yuqoridagi kalendardan kunni tanlang.")
         return
     await state.update_data(exreq_day=day)
     await state.set_state(UserState.exreq_reason)

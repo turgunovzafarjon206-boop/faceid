@@ -609,3 +609,52 @@ def role_kb(emp_id):
         [InlineKeyboardButton(text="👔 Menejer", callback_data=f"setrole:{emp_id}:manager")],
         [InlineKeyboardButton(text="— Rolsiz —", callback_data=f"setrole:{emp_id}:none")],
     ])
+
+
+# ---------------- Kalendar: oy -> kun (Jarima hisoblamaslik so'rash) ----------------
+_UZ_MON_SHORT = ["", "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+                 "Iyul", "Avgust", "Sentyabr", "Oktyabr", "Noyabr", "Dekabr"]
+
+
+def cal_months_kb(prefix, year, max_ym=None, min_year=None, cur_year=None):
+    """12 oy (3 qatordan). max_ym='YYYY-MM' dan keyingi oylar ko'rsatilmaydi.
+    Pastda yilni o'zgartirish: ◀️ 2025 | 2027 ▶️."""
+    rows, row = [], []
+    for m in range(1, 13):
+        ym = f"{year}-{m:02d}"
+        if max_ym and ym > max_ym:
+            break
+        row.append(InlineKeyboardButton(text=_UZ_MON_SHORT[m], callback_data=f"{prefix}m:{ym}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    nav = []
+    if min_year is None or year > min_year:
+        nav.append(InlineKeyboardButton(text=f"◀️ {year - 1}", callback_data=f"{prefix}y:{year - 1}"))
+    if max_ym is None or year < int(max_ym[:4]):
+        nav.append(InlineKeyboardButton(text=f"{year + 1} ▶️", callback_data=f"{prefix}y:{year + 1}"))
+    if nav:
+        rows.append(nav)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def cal_days_kb(prefix, ym, max_day=None):
+    """Oy kunlari: 1..30/31, har qatorda 7 ta (ixcham). max_day='YYYY-MM-DD' dan keyingilari yo'q."""
+    import calendar as _cal
+    y, m = int(ym[:4]), int(ym[5:7])
+    n = _cal.monthrange(y, m)[1]
+    rows, row = [], []
+    for d in range(1, n + 1):
+        iso = f"{ym}-{d:02d}"
+        if max_day and iso > max_day:
+            break
+        row.append(InlineKeyboardButton(text=str(d), callback_data=f"{prefix}d:{iso}"))
+        if len(row) == 7:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="⬅️ Oylar", callback_data=f"{prefix}y:{y}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
