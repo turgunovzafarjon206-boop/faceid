@@ -213,6 +213,7 @@ def admin_data_kb():
         [InlineKeyboardButton(text="🗂 Xodim ma'lumoti", callback_data="a:empdata")],
         [InlineKeyboardButton(text="⬇️ Xodimlar ma'lumoti (Excel)", callback_data="a:empexcel")],
         [InlineKeyboardButton(text="🔍 Guruhda bor, bazada yo'q (Topish)", callback_data="a:findunk")],
+        [InlineKeyboardButton(text="🔗 Bir xil xodimlarni birlashtirish", callback_data="a:merge")],
         [InlineKeyboardButton(text="📋 To'liq to'ldirmaganlar", callback_data="ed:incomplete")],
         [InlineKeyboardButton(text="👑 Adminlar", callback_data="a:admins"),
          InlineKeyboardButton(text="👔 Rollar", callback_data="a:roles")],

@@ -277,6 +277,13 @@ def _norm_name(s):
 
 async def get_employee_by_name(name):
     """Guruhdagi to'liq ism bo'yicha xodimni topadi (tartib va katta/kichik harfga bardoshli)."""
+    # 0) Birlashtirilgan xodimlarning taxalluslari (eng ishonchli)
+    try:
+        by_alias = await employee_by_alias(name)
+        if by_alias:
+            return by_alias
+    except Exception:
+        pass
     target = _norm_name(name)
     ttok = set(target.split())
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1517,8 +1524,23 @@ def _name_key(name):
 async def employees_by_name_key():
     """{ism_kaliti: [xodimlar]} — faqat aniq moslik uchun."""
     out = {}
-    for e in await list_employees():
+    emps = await list_employees()
+    for e in emps:
         out.setdefault(_name_key(full_name(e)), []).append(e)
+    # Taxalluslar (birlashtirilgan xodimlarning eski ismlari)
+    try:
+        by_id = {e["id"]: e for e in emps}
+        async with aiosqlite.connect(DB_PATH) as db:
+            await _ensure_alias_tables(db)
+            cur = await db.execute("SELECT alias, employee_id FROM name_alias")
+            for alias, eid in await cur.fetchall():
+                e = by_id.get(eid)
+                if e:
+                    lst = out.setdefault(_name_key(alias), [])
+                    if all(x["id"] != eid for x in lst):
+                        lst.append(e)
+    except Exception:
+        pass
     return out
 
 
@@ -1553,3 +1575,232 @@ async def fill_day_from_excel(emp_id, day, kelish, ketish):
                 res[etype] = "new"
         await db.commit()
     return res
+
+
+# ==================== Bir xil xodimlarni birlashtirish ====================
+# Masalan: "Sattarova Nilufar Muxitdin qizi" (FaceID'dagi ism) va "Nilufar Sattarova" (botdagi ism)
+# bitta odam. Birlashtirilganda barcha ma'lumot bitta xodimga o'tadi, ikkinchi ism esa
+# "taxallus" (alias) sifatida saqlanadi — keyin FaceID shu ism bilan yozsa ham to'g'ri xodimga tushadi.
+
+_HONORIFICS = {"aka", "opa", "xola", "ustoz", "domla", "ota", "ona", "bobo", "momo",
+               "qizi", "ogli", "o'g'li", "kizi", "ugli", "teacher", "mr", "mrs", "ms",
+               "akа", "опа", "ака", "хола", "устоз", "домла", "қизи", "ўғли", "кизи", "угли"}
+
+
+def _alias_key(name):
+    """Taxallus kaliti: kirill/lotin farqsiz, so'zlar tartibsiz."""
+    return " ".join(sorted(search_key(name).split()))
+
+
+async def _ensure_alias_tables(db):
+    await db.executescript(
+        """CREATE TABLE IF NOT EXISTS name_alias (
+               alias_key TEXT PRIMARY KEY, alias TEXT, employee_id INTEGER NOT NULL);
+           CREATE TABLE IF NOT EXISTS merge_ignore (
+               a INTEGER NOT NULL, b INTEGER NOT NULL, UNIQUE(a, b));""")
+
+
+async def add_name_alias(alias, employee_id):
+    key = _alias_key(alias)
+    if not key:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_alias_tables(db)
+        await db.execute("INSERT OR REPLACE INTO name_alias(alias_key, alias, employee_id) VALUES(?,?,?)",
+                         (key, alias, employee_id))
+        await db.commit()
+
+
+async def alias_map():
+    """{alias_key: employee_id}"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await _ensure_alias_tables(db)
+            cur = await db.execute("SELECT alias_key, employee_id FROM name_alias")
+            return {k: e for k, e in await cur.fetchall()}
+    except Exception:
+        return {}
+
+
+async def employee_by_alias(name):
+    eid = (await alias_map()).get(_alias_key(name))
+    if not eid:
+        return None
+    emp = await get_employee_by_id(eid)
+    return emp if emp and emp.get("active") else None
+
+
+async def aliases_of(employee_id):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await _ensure_alias_tables(db)
+            cur = await db.execute("SELECT alias FROM name_alias WHERE employee_id=? ORDER BY alias",
+                                   (employee_id,))
+            return [r[0] for r in await cur.fetchall()]
+    except Exception:
+        return []
+
+
+async def ignore_merge_pair(a, b):
+    a, b = sorted((int(a), int(b)))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_alias_tables(db)
+        await db.execute("INSERT OR IGNORE INTO merge_ignore(a,b) VALUES(?,?)", (a, b))
+        await db.commit()
+
+
+async def _ignored_pairs():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_alias_tables(db)
+        cur = await db.execute("SELECT a, b FROM merge_ignore")
+        return {(a, b) for a, b in await cur.fetchall()}
+
+
+_HON_KEYS = None
+
+
+def _name_tokens(name):
+    global _HON_KEYS
+    if _HON_KEYS is None:
+        _HON_KEYS = {search_key(w) for w in _HONORIFICS}
+    toks = [t for t in search_key(name.replace(".", " ")).split() if t]
+    core = [t for t in toks if t not in _HON_KEYS]
+    return core or toks
+
+
+def _tok_eq(a, b):
+    """So'zlar tengmi (kichik imlo farqlari bilan: Sattarova/Sattorova, Muxitdin/Muhiddin)."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) == 1:          # bosh harf: "Tolipova N." == "Tolipova Nodiraxon"
+        return a[0] == b[0]
+    if min(len(a), len(b)) >= 5 and a[0] == b[0] and abs(len(a) - len(b)) <= 1:
+        import difflib
+        return difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
+    return False
+
+
+def _names_similar(n1, n2):
+    """Ikki ism bitta odamniki bo'lishi mumkinmi? (qisqaroq ismning hamma so'zi uzunida bor)."""
+    t1, t2 = _name_tokens(n1), _name_tokens(n2)
+    if not t1 or not t2:
+        return False
+    short, long_ = (t1, t2) if len(t1) <= len(t2) else (t2, t1)
+    used = set()
+    for s in short:
+        hit = next((i for i, l in enumerate(long_) if i not in used and _tok_eq(s, l)), None)
+        if hit is None:
+            return False
+        used.add(hit)
+    full = [t for t in short if len(t) > 1]
+    if not full:
+        return False
+    # Faqat bitta so'z mos kelsa — juda qisqa so'zlar (masalan "ali") hisobga olinmaydi
+    return len(full) >= 2 or len(full[0]) >= 4
+
+
+async def employee_stats(emp_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*), COUNT(DISTINCT day), MAX(day) FROM events WHERE employee_id=?",
+                               (emp_id,))
+        cnt, days, last = await cur.fetchone()
+    return {"events": cnt or 0, "days": days or 0, "last_day": last}
+
+
+async def find_duplicate_candidates(limit=50):
+    """O'xshash ismli xodim juftliklari. Birinchi — biri botga ulangan, ikkinchisi ulanmagan juftliklar."""
+    emps = await list_employees(active_only=True)
+    ignored = await _ignored_pairs()
+    pairs = []
+    for i in range(len(emps)):
+        for j in range(i + 1, len(emps)):
+            a, b = emps[i], emps[j]
+            if tuple(sorted((a["id"], b["id"]))) in ignored:
+                continue
+            if a.get("telegram_id") and b.get("telegram_id") and a["telegram_id"] != b["telegram_id"]:
+                continue   # ikkalasi boshqa-boshqa Telegram'ga ulangan — boshqa odamlar
+            if not _names_similar(full_name(a), full_name(b)):
+                continue
+            score = 0 if bool(a.get("telegram_id")) != bool(b.get("telegram_id")) else 1
+            pairs.append((score, a, b))
+    pairs.sort(key=lambda p: (p[0], full_name(p[1]).lower()))
+    return [(a, b) for _, a, b in pairs[:limit]]
+
+
+async def merge_employees(keep_id, drop_id, keep_name=None):
+    """drop_id xodimning barcha ma'lumotini keep_id ga o'tkazadi va drop_id ni o'chiradi.
+    keep_name berilsa — qoldiriladigan xodim ismi shunga o'zgaradi.
+    Ikkala eski ism ham taxallus sifatida saqlanadi (FaceID/Excel shu ismlar bilan ham topadi)."""
+    keep_id, drop_id = int(keep_id), int(drop_id)
+    if keep_id == drop_id:
+        raise ValueError("Bir xil xodim")
+    keep = await get_employee_by_id(keep_id)
+    drop = await get_employee_by_id(drop_id)
+    if not keep or not drop:
+        raise ValueError("Xodim topilmadi")
+    names = {full_name(keep), full_name(drop)}
+    moved = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_alias_tables(db)
+        cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in await cur.fetchall()}
+
+        async def move(table, extra_unique=False):
+            if table not in tables:
+                return
+            if extra_unique:
+                c = await db.execute(f"UPDATE OR IGNORE {table} SET employee_id=? WHERE employee_id=?",
+                                     (keep_id, drop_id))
+                await db.execute(f"DELETE FROM {table} WHERE employee_id=?", (drop_id,))
+            else:
+                c = await db.execute(f"UPDATE {table} SET employee_id=? WHERE employee_id=?",
+                                     (keep_id, drop_id))
+            moved[table] = c.rowcount
+
+        await move("events")
+        await move("late_exemptions", True)
+        await move("data_submissions", True)
+        await move("survey_answers", True)
+        await move("manual_lessons", True)
+        await move("exempt_requests")
+        await move("sched_alias")
+        await move("name_alias")
+        # Rol: qoldiriladiganda yo'q bo'lsa — o'chiriladigandagi rol o'tadi
+        if "roles" in tables:
+            await db.execute("UPDATE OR IGNORE roles SET employee_id=? WHERE employee_id=?", (keep_id, drop_id))
+            await db.execute("DELETE FROM roles WHERE employee_id=?", (drop_id,))
+
+        # Bir kunda ham bot, ham Excel qaydi bo'lsa — bot (asl) qaydi qoladi
+        await db.execute(
+            """DELETE FROM events WHERE employee_id=? AND external_id LIKE 'xls-%' AND EXISTS (
+                   SELECT 1 FROM events e2 WHERE e2.employee_id=events.employee_id
+                   AND e2.day=events.day AND e2.event_type=events.event_type
+                   AND (e2.external_id IS NULL OR e2.external_id NOT LIKE 'xls-%'))""", (keep_id,))
+
+        # Bo'sh maydonlarni o'chiriladigan xodimdan to'ldiramiz
+        upd = {}
+        for f in ("telegram_id", "faceid_user_id", "department_id", "branch_id"):
+            if not keep.get(f) and drop.get(f):
+                upd[f] = drop[f]
+        drop_phone = str(drop.get("phone") or "")
+        keep_phone = str(keep.get("phone") or "")
+        def _ok_phone(p):
+            return len(p) == 9 and p.isdigit()
+        if _ok_phone(drop_phone) and not _ok_phone(keep_phone):
+            upd["phone"] = drop_phone      # haqiqiy telefon raqami bo'lsa
+        if keep_name:
+            upd["first_name"], upd["last_name"] = keep_name.strip(), ""
+        # Avval o'chiramiz (UNIQUE telefon/FaceID ID to'qnashmasligi uchun), so'ng yangilaymiz
+        await db.execute("DELETE FROM employees WHERE id=?", (drop_id,))
+        if upd:
+            sets = ", ".join(f"{k}=?" for k in upd)
+            await db.execute(f"UPDATE employees SET {sets} WHERE id=?", (*upd.values(), keep_id))
+        for nm in names:
+            k = _alias_key(nm)
+            if k:
+                await db.execute(
+                    "INSERT OR REPLACE INTO name_alias(alias_key, alias, employee_id) VALUES(?,?,?)",
+                    (k, nm, keep_id))
+        await db.execute("DELETE FROM merge_ignore WHERE a=? OR b=?", (drop_id, drop_id))
+        await db.commit()
+    return moved
