@@ -2595,7 +2595,7 @@ async def att_xls_file(msg: Message, state: FSMContext):
         matched += 1
         for day, kel, ket in sh["rows"]:
             months.add(day[:7])
-            res = await db.fill_day_from_excel(emp["id"], day, kel, ket)
+            res = await db.fill_day_from_excel(emp["id"], day, kel, ket, src=sh["name"])
             for v in res.values():
                 if v:
                     cnt[v] += 1
@@ -2630,6 +2630,7 @@ async def att_xls_file(msg: Message, state: FSMContext):
                          reply_markup=kb.admin_menu() if i + 3900 >= len(text) else None)
     # Moslanmagan ismlar: admin botdagi xodimni tanlaydi
     _XLS_PENDING[msg.from_user.id] = pending
+    _XLS_USED[msg.from_user.id] = {e["id"]: sh["name"] for sh, e in plan}
     for idx, (name, rows, cands) in enumerate(pending[:30]):
         await msg.answer(_bind_text(name, rows, cands), reply_markup=_bind_kb(idx, cands))
     if len(pending) > 30:
@@ -2638,6 +2639,7 @@ async def att_xls_file(msg: Message, state: FSMContext):
 
 # --- Excel ismini botdagi xodimga bog'lash ---
 _XLS_PENDING = {}     # admin_id -> [(excel_ism, rows, cands)]
+_XLS_USED = {}        # admin_id -> {xodim_id: shu fayldagi o'z varag'i ismi}
 
 
 def _bind_text(name, rows, cands):
@@ -2693,10 +2695,15 @@ async def att_bind_pick(cb: CallbackQuery, state: FSMContext):
     emp = await db.get_employee_by_id(int(emp_id))
     if not emp:
         return await cb.answer("Xodim topilmadi", show_alert=True)
+    own = (_XLS_USED.get(cb.from_user.id) or {}).get(emp["id"])
+    if own:
+        return await cb.answer(f"❗️ {db.full_name(emp)} ning shu faylda o'z varag'i bor («{own}»). "
+                               "Demak «" + name + "» boshqa odam — boshqasini tanlang.", show_alert=True)
     await db.add_name_alias(name, emp["id"])
+    _XLS_USED.setdefault(cb.from_user.id, {})[emp["id"]] = name
     cnt = {"new": 0, "updated": 0, "same": 0, "bot": 0}
     for day, kel, ket in rows:
-        res = await db.fill_day_from_excel(emp["id"], day, kel, ket)
+        res = await db.fill_day_from_excel(emp["id"], day, kel, ket, src=name)
         for v in res.values():
             if v:
                 cnt[v] += 1
@@ -2719,38 +2726,88 @@ async def att_bind_skip(cb: CallbackQuery):
     await cb.answer()
 
 
+def _akey_hash(k):
+    return _hashlib.md5(k.encode()).hexdigest()[:12]
+
+
+async def _alias_list_view():
+    items = [it for it in await db.list_name_aliases()
+             if db._alias_key(db.full_name(it[2])) != it[0]]      # o'z ismi bog'lanishi ko'rsatilmaydi
+    items.sort(key=lambda it: (db.full_name(it[2]).lower(), it[1].lower()))
+    if not items:
+        return "🔗 Hali bog'langan Excel ismlari yo'q.", None
+    lines = ["🔗 <b>Bog'langan ismlar</b> (botdagi xodim ← Excel'dagi ism)",
+             "Noto'g'risini bosing — ajratiladi va asliga qaytadi.", ""]
+    rows = []
+    for i, (k, alias, emp) in enumerate(items[:80], 1):
+        lines.append(f"{i}. <b>{db.full_name(emp)}</b> ← «{alias}»")
+        rows.append([InlineKeyboardButton(text=f"✂️ {i}. {db.full_name(emp)} ← {alias}"[:60],
+                                          callback_data=f"axd:{_akey_hash(k)}")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _alias_by_hash(h):
+    return next(((k, alias, emp) for k, alias, emp in await db.list_name_aliases()
+                 if _akey_hash(k) == h), None)
+
+
 @router.callback_query(F.data == "axl")
 async def att_alias_list(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    items = await db.list_name_aliases()
-    if not items:
-        await cb.message.answer("🔗 Hali bog'langan Excel ismlari yo'q.")
-        return await cb.answer()
-    lines = ["🔗 <b>Excel ism → botdagi xodim</b>", "Noto'g'ri bog'langanini ❌ bilan o'chiring "
-             "(keyingi yuklashda bot qaytadan so'raydi):", ""]
-    rows = []
-    for i, (k, alias, emp) in enumerate(items[:60], 1):
-        lines.append(f"{i}. {alias} → <b>{db.full_name(emp)}</b>")
-        rows.append([InlineKeyboardButton(text=f"❌ {i}. {alias}"[:60], callback_data=f"axd:{_hashlib.md5(k.encode()).hexdigest()[:12]}")])
-    await cb.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    text, markup = await _alias_list_view()
+    await cb.message.answer(text, reply_markup=markup)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("axd:"))
-async def att_alias_delete(cb: CallbackQuery):
+async def att_alias_confirm(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return await cb.answer()
-    key = cb.data[4:]
-    items = await db.list_name_aliases()
-    full = next((k for k, _, _ in items if _hashlib.md5(k.encode()).hexdigest()[:12] == key), None)
-    if full:
-        await db.remove_name_alias(full)
-    await cb.answer("O'chirildi ✅" if full else "Topilmadi")
-    items = await db.list_name_aliases()
-    rows = [[InlineKeyboardButton(text=f"❌ {i}. {alias}"[:60], callback_data=f"axd:{_hashlib.md5(k.encode()).hexdigest()[:12]}")]
-            for i, (k, alias, emp) in enumerate(items[:60], 1)]
+    h = cb.data[4:]
+    it = await _alias_by_hash(h)
+    if not it:
+        return await cb.answer("Allaqachon ajratilgan", show_alert=True)
+    k, alias, emp = it
+    nm = db.full_name(emp)
+    await cb.message.answer(
+        f"✂️ «{alias}» ni <b>{nm}</b> dan ajratamizmi?\n\n"
+        f"• Fayldan «{alias}» nomi bilan {nm} ga yozilgan kirish-chiqishlar o'chiriladi.\n"
+        f"• Bot/FaceID yozgan va qo'lda kiritilgan vaqtlar <b>o'zgarmaydi</b>.\n"
+        f"• Shundan so'ng o'sha oy(lar) tabelini qayta yuklaysiz: {nm} ning o'z vaqtlari "
+        f"qayta to'ladi, «{alias}» uchun esa bot kimga tegishli ekanini qaytadan so'raydi.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Ha, ajratish", callback_data=f"axD:{h}")],
+            [InlineKeyboardButton(text="🔙 Yo'q", callback_data="mg:none")]]))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "mg:none")
+async def att_alias_cancel(cb: CallbackQuery):
     try:
-        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await cb.message.edit_text("Bekor qilindi.")
     except Exception:
         pass
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("axD:"))
+async def att_alias_detach(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    it = await _alias_by_hash(cb.data[4:])
+    if not it:
+        return await cb.answer("Allaqachon ajratilgan", show_alert=True)
+    res = await db.detach_name_alias(it[0])
+    nm = db.full_name(res["emp"]) if res and res["emp"] else "xodim"
+    months = ", ".join(f"{reports.UZ_MONTHS[int(m[5:])]} {m[:4]}" for m in res["months"]) if res else ""
+    text = f"✅ «{res['alias']}» <b>{nm}</b> dan ajratildi.\n🗑 Fayldan yozilgan {res['deleted']} ta vaqt o'chirildi."
+    if months:
+        text += (f"\n\n📥 Endi shu oy(lar) tabelini qayta yuklang: <b>{months}</b>\n"
+                 f"(FaceID boshqarish → 📥 Kirish-chiqish yuklash). {nm} ning o'z vaqtlari qayta to'ladi, "
+                 f"«{res['alias']}» uchun to'g'ri xodimni tanlaysiz yoki o'tkazib yuborasiz.")
+    try:
+        await cb.message.edit_text(text)
+    except Exception:
+        await cb.message.answer(text)
+    await cb.answer("Ajratildi ✅")

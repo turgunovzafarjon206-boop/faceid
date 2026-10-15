@@ -1537,11 +1537,17 @@ async def employees_by_name_key():
     return out
 
 
-async def fill_day_from_excel(emp_id, day, kelish, ketish):
+async def _ensure_xls_src(db):
+    await db.execute("CREATE TABLE IF NOT EXISTS xls_src (external_id TEXT PRIMARY KEY, src_key TEXT)")
+
+
+async def fill_day_from_excel(emp_id, day, kelish, ketish, src=None):
     """Bot yozmagan turini Excel'dan to'ldiradi. Bot yozgan (yoki qo'lda kiritilgan) qayd o'zgarmaydi.
     Qaytaradi: {'in': holat, 'out': holat}; holat: 'new' | 'updated' | 'same' | 'bot' | None."""
     res = {"in": None, "out": None}
+    src_key = _alias_key(src) if src else None
     async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_xls_src(db)
         cur = await db.execute(
             "SELECT event_type, external_id, ts FROM events WHERE employee_id=? AND day=?", (emp_id, day))
         rows = await cur.fetchall()
@@ -1555,6 +1561,9 @@ async def fill_day_from_excel(emp_id, day, kelish, ketish):
                 continue
             ext = f"xls-{emp_id}-{day}-{etype}"
             ts = f"{day}T{hm}:00"
+            if src_key:   # qaysi Excel ismidan yozilgani (keyin ajratish uchun)
+                await db.execute("INSERT OR REPLACE INTO xls_src(external_id, src_key) VALUES(?,?)",
+                                 (ext, src_key))
             if ext in xls:
                 if xls[ext] == ts:
                     res[etype] = "same"
@@ -1716,3 +1725,32 @@ async def similar_employees(name, exclude_ids=()):
         if _names_similar(name, full_name(e)):
             out.append(e)
     return out
+
+
+
+async def detach_name_alias(alias_key):
+    """Excel ism bog'lanishini bekor qiladi va shu ism orqali yozilgan Excel vaqtlarini o'chiradi.
+    Eski (manbasi yozilmagan) Excel vaqtlari ham o'chiriladi — tabelni qayta yuklab tiklanadi.
+    Bot/FaceID va qo'lda kiritilgan vaqtlar o'zgarmaydi.
+    Qaytaradi: {'emp': xodim, 'alias': ism, 'deleted': son, 'months': [YYYY-MM...]} yoki None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_alias_tables(db)
+        await _ensure_xls_src(db)
+        cur = await db.execute("SELECT alias, employee_id FROM name_alias WHERE alias_key=?", (alias_key,))
+        r = await cur.fetchone()
+        if not r:
+            return None
+        alias, emp_id = r
+        cur = await db.execute(
+            """SELECT e.id, e.external_id, e.day, s.src_key FROM events e
+               LEFT JOIN xls_src s ON s.external_id = e.external_id
+               WHERE e.employee_id=? AND e.external_id LIKE 'xls-%'""", (emp_id,))
+        rows = await cur.fetchall()
+        to_del = [(eid, ext, day) for eid, ext, day, src in rows if src is None or src == alias_key]
+        for eid, ext, _ in to_del:
+            await db.execute("DELETE FROM events WHERE id=?", (eid,))
+            await db.execute("DELETE FROM xls_src WHERE external_id=?", (ext,))
+        await db.execute("DELETE FROM name_alias WHERE alias_key=?", (alias_key,))
+        await db.commit()
+    return {"emp": await get_employee_by_id(emp_id), "alias": alias, "deleted": len(to_del),
+            "months": sorted({d[:7] for _, _, d in to_del})}
