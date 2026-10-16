@@ -78,6 +78,7 @@ async def _apply_schedule(emp, day, r, ctx):
         lesson_min = await db.lesson_start_min(ctx["sched_name"], day)
     else:
         return
+    r["lesson_based"] = True     # kechikish dars jadvali bo'yicha (faqat Excel'da ko'rinadi)
     if lesson_min is None:
         r["kechikish_min"] = 0
         r["kech_qoldi"] = False
@@ -93,6 +94,13 @@ async def _apply_schedule(emp, day, r, ctx):
         else:
             r["kechikish_min"] = 0
             r["kech_qoldi"] = False
+
+
+def _hide_lesson_late(r):
+    """Botda ko'rsatish uchun: dars jadvali bo'yicha kechikish/jarima ko'rsatilmaydi (faqat Excel'da)."""
+    if r and r.get("lesson_based"):
+        r["kechikish_min"] = 0
+        r["kech_qoldi"] = False
 
 
 def _apply_exemption(emp, day, r, exempt_map):
@@ -120,8 +128,9 @@ def _apply_exemption(emp, day, r, exempt_map):
     return ("time", from_min)
 
 
-async def _late_series(emp, day_from, day_to):
-    """Kunlar bo'yicha (day, r, late) ketma-ketligi (tartibda)."""
+async def _late_series(emp, day_from, day_to, for_bot=False):
+    """Kunlar bo'yicha (day, r, late) ketma-ketligi (tartibda).
+    for_bot=True — botdagi matnlar uchun: dars jadvali bo'yicha kechikish hisobga olinmaydi."""
     rows = await db.events_between(emp["id"], day_from, day_to)
     by_day = {}
     for day, etype, ts in rows:
@@ -135,6 +144,8 @@ async def _late_series(emp, day_from, day_to):
             continue
         await _apply_schedule(emp, day, r, sched_name)
         _apply_exemption(emp, day, r, exempt_map)
+        if for_bot:
+            _hide_lesson_late(r)
         late = r["kechikish_min"] if emp["count_late"] else 0
         series.append((day, r, late))
     return series
@@ -245,7 +256,7 @@ def compute_day(emp, events):
 
     # Kech qolish faqat KIRISH bo'lsa
     late_min = 0
-    if emp["count_late"] and first_in:
+    if emp["count_late"] and first_in and db.has_schedule(emp):
         ws = _parse_hm(emp["work_start"])
         start_dt = first_in.replace(hour=ws.hour, minute=ws.minute,
                                     second=0, microsecond=0)
@@ -256,7 +267,7 @@ def compute_day(emp, events):
 
     # Ish grafigidan ortiqcha ishlangan (chiqish ish oxiridan keyin)
     overtime = 0
-    if last_out:
+    if last_out and db.has_schedule(emp):
         we = _parse_hm(emp["work_end"])
         end_dt = last_out.replace(hour=we.hour, minute=we.minute,
                                   second=0, microsecond=0)
@@ -288,8 +299,10 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
     had_late = r["kechikish_min"] > 0
     exempt_map = await db.exempt_map_for(emp["id"])
     ex = _apply_exemption(emp, day, r, exempt_map)
+    lesson_day = bool(r.get("lesson_based"))
+    _hide_lesson_late(r)
     txt = head + (f"\n🟢 Kirish: {kirish}\n🔴 Chiqish: {chiqish}")
-    if emp["count_late"]:
+    if emp["count_late"] and db.has_schedule(emp) and not lesson_day:
         if r["kechikish_min"] > 0:
             note = ""
             if ex and ex[0] == "time":
@@ -308,7 +321,7 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
         show = await show_fine_for(emp, for_admin)
         if show:
             mf, mt = _month_bounds(day)
-            series = await _late_series(emp, mf, day)
+            series = await _late_series(emp, mf, day, for_bot=True)
             info, _ = _apply_fines(series)
             fine = info.get(day, (0, 0, 0))[0]
             if fine:
@@ -317,7 +330,7 @@ async def daily_text(emp, day: str, for_admin=False) -> str:
 
 
 async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=False) -> str:
-    series = await _late_series(emp, day_from, day_to)
+    series = await _late_series(emp, day_from, day_to, for_bot=True)
     info, fine_total = _apply_fines(series)
 
     worked_total = 0
@@ -351,7 +364,7 @@ async def period_text(emp, day_from: str, day_to: str, title: str, for_admin=Fal
     )
     if over_total > 0 and show_over:
         summary += f"✅ Ortiqcha ishlangan: {fmt_duration(over_total)}\n"
-    if emp["count_late"]:
+    if emp["count_late"] and (late_total or db.has_schedule(emp)):
         summary += (f"⏰ Kech qolish vaqti: {fmt_duration(late_total)}\n"
                     f"🔴 Kech qolgan kun: {late_days} kun\n")
         show = await show_fine_for(emp, for_admin)
@@ -538,6 +551,7 @@ async def notify_text(emp, etype, ts):
         sched_name = await db.lesson_context(emp)
         await _apply_schedule(emp, day, r, sched_name)
         _apply_exemption(emp, day, r, await db.exempt_map_for(emp["id"]))
+        _hide_lesson_late(r)
     worked = fmt_duration(r.get("ishlangan_min", 0))
     late_min = r.get("kechikish_min", 0)
 
@@ -546,7 +560,7 @@ async def notify_text(emp, etype, ts):
         late = f"\n⏰ Siz {fmt_duration(late_min)} kech qoldingiz."
         if await show_fine_for(emp):
             mf, _ = _month_bounds(day)
-            series = await _late_series(emp, mf, day)
+            series = await _late_series(emp, mf, day, for_bot=True)
             info, _ = _apply_fines(series)
             fine = info.get(day, (0, 0, 0))[0]
             if fine:
@@ -599,7 +613,7 @@ async def build_employees_excel():
             connected += 1
         row = [
             i, db.full_name(emp), emp["phone"], await dep_name(emp.get("department_id")),
-            f"{emp['work_start']}-{emp['work_end']}",
+            db.schedule_label(emp),
             "hisoblanadi" if emp["count_late"] else "hisoblanmaydi",
             "🟢 ulangan" if emp["telegram_id"] else "🔴 ulanmagan",
         ]

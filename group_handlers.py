@@ -156,7 +156,7 @@ async def cmd_jarima(msg: Message, command: CommandObject):
     fined, clean = [], []
     grand = 0
     for e in emps:
-        series = await reports._late_series(e, first, last)
+        series = await reports._late_series(e, first, last, for_bot=True)
         _, total = reports._apply_fines(series)
         if not e["count_late"]:
             total = 0
@@ -214,7 +214,7 @@ async def cmd_jamoa(msg: Message, command: CommandObject):
             dep = deps[e["department_id"]]
         link = "🟢" if e["telegram_id"] else "🔴"
         extra = f" — {dep}" if dep else ""
-        lines.append(f"{i}. {link} {db.full_name(e)}{extra} ({e['work_start']}-{e['work_end']})")
+        lines.append(f"{i}. {link} {db.full_name(e)}{extra} ({db.schedule_label(e)})")
     linked = sum(1 for e in emps if e["telegram_id"])
     lines.append(f"\n🟢 Botga ulangan: {linked} | 🔴 Ulanmagan: {len(emps) - linked}")
     await _send_long(msg, "\n".join(lines))

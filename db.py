@@ -229,6 +229,18 @@ async def add_employee(first_name, last_name, phone, faceid_user_id,
         return cur.lastrowid
 
 
+def has_schedule(emp):
+    """Ish grafigi kiritilganmi? ('-' yoki bo'sh bo'lsa — grafiksiz, kechikish hisoblanmaydi)."""
+    import re as _r
+    return bool(_r.fullmatch(r"\d{1,2}:\d{2}", str(emp.get("work_start") or "").strip()))
+
+
+def schedule_label(emp):
+    if not has_schedule(emp):
+        return "yo'q (grafiksiz)"
+    return f"{emp['work_start']}-{emp['work_end']}"
+
+
 def full_name(emp):
     """Xodim nomi (username). last_name bo'sh bo'lsa faqat username qaytadi."""
     a = str(emp.get("first_name") or "")

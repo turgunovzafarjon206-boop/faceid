@@ -264,7 +264,7 @@ async def empdata_show(cb: CallbackQuery):
         d = await db.get_department(emp["department_id"])
         dep = d["name"] if d else "yo'q"
     header = (f"🗂 <b>{_nm(emp)}</b>\n📞 {emp['phone']}\n🏢 Bo'lim: {dep}\n"
-              f"🕐 Grafik: {emp['work_start']}-{emp['work_end']}\n"
+              f"🕐 Grafik: {db.schedule_label(emp)}\n"
               f"{'━'*20}\n")
     if not subs:
         await cb.message.answer(header + "\nHali hech qanday ma'lumot topshirmagan.",
@@ -308,7 +308,7 @@ async def empdata_download(cb: CallbackQuery):
     await cb.answer("Tayyorlanmoqda...")
 
     summary = [f"Xodim: {_nm(emp)}", f"Telefon: {emp['phone']}",
-               f"Grafik: {emp['work_start']}-{emp['work_end']}", "=" * 30, ""]
+               f"Grafik: {db.schedule_label(emp)}", "=" * 30, ""]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         idx = 0

@@ -211,6 +211,7 @@ def admin_data_kb():
         [InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")],
         [InlineKeyboardButton(text="🔎 Xodim qidirish", callback_data="a:empsearch")],
         [InlineKeyboardButton(text="👥 Xodimlar ro'yxati", callback_data="a:listemp")],
+        [InlineKeyboardButton(text="🕐 Grafiksiz qilish («-» kiritilganlar)", callback_data="a:nosched")],
         [InlineKeyboardButton(text="🗂 Xodim ma'lumoti", callback_data="a:empdata")],
         [InlineKeyboardButton(text="⬇️ Xodimlar ma'lumoti (Excel)", callback_data="a:empexcel")],
         [InlineKeyboardButton(text="🔍 Guruhda bor, bazada yo'q (Topish)", callback_data="a:findunk")],

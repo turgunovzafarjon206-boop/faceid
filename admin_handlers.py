@@ -210,10 +210,10 @@ async def add_phone(msg: Message, state: FSMContext):
 @router.message(AddEmp.schedule, F.text)
 async def add_schedule(msg: Message, state: FSMContext):
     val = msg.text.strip()
-    if val == "-":
-        # grafiksiz — standart qiymatlar ishlatiladi
-        from config import DEFAULT_WORK_START, DEFAULT_WORK_END
-        await state.update_data(ws=DEFAULT_WORK_START, we=DEFAULT_WORK_END)
+    if val in ("-", "—", "–", "yo'q", "yoq"):
+        # grafiksiz — grafik yozilmaydi, kechikish/ortiqcha hisoblanmaydi
+        # (O'quv bo'limi ustozlari uchun dars jadvali bo'lsa — dars vaqti bo'yicha)
+        await state.update_data(ws="-", we="-")
     else:
         try:
             ws, we = val.split("-")
@@ -306,7 +306,7 @@ async def _create_employee(target, state: FSMContext, dep_id, branch_id=None):
     await state.clear()
     await target.answer(
         f"✅ Xodim qo'shildi!\n\n👤 Username: {data['username']}\n"
-        f"📞 {data['phone']}\n🕐 {data['ws']}-{data['we']}\n"
+        f"📞 {data['phone']}\n🕐 {'yo‘q (grafiksiz)' if data['ws'] == '-' else data['ws'] + '-' + data['we']}\n"
         f"⏰ Kechikish: {cl}{dep_name}{br_name}\n\n"
         f"Endi xodim botga /start bosib, shu raqam bilan kirsin.",
         reply_markup=kb.admin_menu())
@@ -345,7 +345,7 @@ async def show_emp(cb: CallbackQuery):
         br = b["name"] if b else "yo'q"
     await cb.message.answer(
         f"👤 Username: {db.full_name(emp)}\n📞 {emp['phone']}\n"
-        f"🕐 {emp['work_start']}-{emp['work_end']}\n🏢 Bo'lim: {dep}\n🏬 Filial: {br}\n"
+        f"🕐 Ish grafigi: {db.schedule_label(emp)}\n🏢 Bo'lim: {dep}\n🏬 Filial: {br}\n"
         f"👔 Rol: {db.ROLE_NAMES.get(await db.get_role(emp['id']), 'yo‘q')}\n"
         f"⏰ Kechikish: {'hisoblanadi' if emp['count_late'] else 'hisoblanmaydi'}\n"
         f"📲 Telegram: {bound}",
@@ -392,7 +392,7 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
         "name": "Yangi username:",
         "phone": "Yangi telefon raqam (901234567):",
         "faceid": "Yangi FaceID ID:",
-        "schedule": "Yangi ish grafigi (08:00-18:00):",
+        "schedule": "Yangi ish grafigi (08:00-18:00).\nGrafiksiz qilish uchun - (chiziqcha) yuboring:",
     }
     await cb.message.answer(prompts.get(field, "Yangi qiymat:"))
     await cb.answer()
@@ -409,6 +409,8 @@ async def save_edit(msg: Message, state: FSMContext):
             await db.update_employee(emp_id, phone=val)
         elif field == "faceid":
             await db.update_employee(emp_id, faceid_user_id=val)
+        elif field == "schedule" and val in ("-", "—", "–", "yo'q", "yoq"):
+            await db.update_employee(emp_id, work_start="-", work_end="-")
         elif field == "schedule":
             ws, we = val.split("-")
             dt.datetime.strptime(ws.strip(), "%H:%M")
@@ -2888,3 +2890,82 @@ async def emp_reactivate(cb: CallbackQuery):
     await cb.answer("Qayta faollashtirildi ✅")
     await cb.message.answer(f"♻️ {db.full_name(emp)} qayta faol qilindi.",
                             reply_markup=kb.employee_manage_kb(emp))
+
+
+# ==================== 🕐 Grafiksiz qilish (oldin "-" kiritilganlar uchun) ====================
+def _nosch_kb(emps, selected):
+    rows = []
+    for e in emps:
+        mark = "☑️" if e["id"] in selected else "⬜️"
+        rows.append([InlineKeyboardButton(text=f"{mark} {db.full_name(e)}"[:60],
+                                          callback_data=f"nosch:t:{e['id']}")])
+    rows.append([InlineKeyboardButton(text="☑️ Hammasi", callback_data="nosch:all"),
+                 InlineKeyboardButton(text="⬜️ Hech biri", callback_data="nosch:none")])
+    rows.append([InlineKeyboardButton(text=f"✅ Tanlanganlarni grafiksiz qilish ({len(selected)})",
+                                      callback_data="nosch:save")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _nosch_emps():
+    from config import DEFAULT_WORK_START, DEFAULT_WORK_END
+    return [e for e in await db.list_employees()
+            if db.has_schedule(e) and e["work_start"] == DEFAULT_WORK_START
+            and e["work_end"] == DEFAULT_WORK_END]
+
+
+@router.callback_query(F.data == "a:nosched")
+async def nosch_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    from config import DEFAULT_WORK_START, DEFAULT_WORK_END
+    emps = await _nosch_emps()
+    if not emps:
+        await cb.message.answer(f"✅ {DEFAULT_WORK_START}-{DEFAULT_WORK_END} grafikli xodim yo'q.")
+        return await cb.answer()
+    await state.update_data(nosch_sel=[])
+    await cb.message.answer(
+        f"🕐 Ilgari grafik o'rniga «-» kiritilganlarga avtomatik {DEFAULT_WORK_START}-{DEFAULT_WORK_END} "
+        f"yozilib qolgan edi. Quyida shu grafikdagi {len(emps)} ta xodim.\n\n"
+        "Grafiksiz bo'lishi kerak bo'lganlarini ☑️ belgilang (haqiqatan "
+        f"{DEFAULT_WORK_START}-{DEFAULT_WORK_END} da ishlaydiganlarini belgilamang) va «✅» bosing.\n"
+        "Grafiksiz xodimga kechikish va jarima hisoblanmaydi (ustozlarga — dars jadvali bo'yicha).",
+        reply_markup=_nosch_kb(emps, set()))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("nosch:"))
+async def nosch_action(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emps = await _nosch_emps()
+    sel = set((await state.get_data()).get("nosch_sel", []))
+    act = cb.data.split(":")[1]
+    if act == "t":
+        eid = int(cb.data.split(":")[2])
+        sel ^= {eid}
+    elif act == "all":
+        sel = {e["id"] for e in emps}
+    elif act == "none":
+        sel = set()
+    elif act == "save":
+        if not sel:
+            return await cb.answer("Hech kim belgilanmagan", show_alert=True)
+        names = []
+        for e in emps:
+            if e["id"] in sel:
+                await db.update_employee(e["id"], work_start="-", work_end="-")
+                names.append(db.full_name(e))
+        await state.update_data(nosch_sel=[])
+        try:
+            await cb.message.edit_text(f"✅ {len(names)} ta xodim grafiksiz qilindi:\n" +
+                                       "\n".join(f"• {n}" for n in names[:80]))
+        except Exception:
+            await cb.message.answer(f"✅ {len(names)} ta xodim grafiksiz qilindi.")
+        return await cb.answer("Saqlandi ✅")
+    sel &= {e["id"] for e in emps}
+    await state.update_data(nosch_sel=list(sel))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=_nosch_kb(emps, sel))
+    except Exception:
+        pass
+    await cb.answer()

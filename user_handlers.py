@@ -156,7 +156,7 @@ async def cb_info_view(cb: CallbackQuery):
         late = "hisoblanadi" if emp["count_late"] else "hisoblanmaydi"
         txt = (f"👤 Username: {db.full_name(emp)}\n"
                f"📞 Telefon: {emp['phone']}\n"
-               f"🕐 Ish grafigi: {emp['work_start']}-{emp['work_end']}\n"
+               f"🕐 Ish grafigi: {db.schedule_label(emp)}\n"
                f"⏰ Kechikish: {late}")
         subs = await db.employee_submissions(emp["id"])
         if subs:
