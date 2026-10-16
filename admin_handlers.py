@@ -114,6 +114,10 @@ class LessonImg(StatesGroup):
     photo = State()
 
 
+class EmpSearch(StatesGroup):
+    q = State()
+
+
 class AttXls(StatesGroup):
     wait_file = State()
     bind_search = State()
@@ -2811,3 +2815,76 @@ async def att_alias_detach(cb: CallbackQuery):
     except Exception:
         await cb.message.answer(text)
     await cb.answer("Ajratildi ✅")
+
+
+# ==================== 🔎 Xodim qidirish (bor yoki yo'qligini bilish) ====================
+@router.callback_query(F.data == "a:empsearch")
+async def emp_search_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(EmpSearch.q)
+    await cb.message.answer("🔎 Xodim ismi yoki telefon raqamini yozing\n"
+                            "(kirill yoki lotinda, ism-familiya tartibi muhim emas):")
+    await cb.answer()
+
+
+@router.message(EmpSearch.q, F.text)
+async def emp_search_run(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    q = msg.text.strip()
+    res = await db.lookup_employee(q)
+    found, unknown = res["found"], res["unknown"]
+    lines, rows = [], []
+    if found:
+        lines.append(f"✅ <b>Botda bor</b> — «{q}» bo'yicha {len(found)} ta:")
+        for i, (e, why) in enumerate(found, 1):
+            st = await db.employee_stats(e["id"])
+            dep = await db.get_department(e["department_id"]) if e.get("department_id") else None
+            br = await db.get_branch(e["branch_id"]) if e.get("branch_id") else None
+            if not e.get("active"):
+                mark, status = "⚪️", "o'chirilgan (nofaol)"
+            elif e.get("telegram_id"):
+                mark, status = "🟢", "botga ulangan"
+            else:
+                mark, status = "🔴", "botga hali ulanmagan"
+            info = [f"📞 {e.get('phone') or '-'}", status]
+            if dep:
+                info.append(f"🏢 {dep['name']}")
+            if br:
+                info.append(f"🏬 {br['name']}")
+            last = (f"oxirgi kirish-chiqish: {reports.uz_date(st['last_day'])}"
+                    if st["last_day"] else "kirish-chiqish yo'q")
+            lines.append(f"\n{i}. {mark} <b>{db.full_name(e)}</b>\n   " + " · ".join(info) + f"\n   📊 {last}"
+                         + (f"\n   🔗 {why}" if why else ""))
+            if e.get("active"):
+                rows.append([InlineKeyboardButton(text=f"{mark} {i}. {db.full_name(e)} — ochish"[:60],
+                                                  callback_data=f"emp:{e['id']}")])
+            else:
+                rows.append([InlineKeyboardButton(text=f"♻️ {i}. {db.full_name(e)} — qayta faollashtirish"[:60],
+                                                  callback_data=f"reactivate:{e['id']}")])
+    else:
+        lines.append(f"❌ <b>Botda yo'q</b> — «{q}» ismli yoki shu raqamli xodim topilmadi.")
+    if unknown:
+        lines.append("\n⚠️ <b>FaceID guruhida bor, lekin botda yo'q:</b>")
+        lines += [f"   • {n}" for n in unknown]
+    if not found or unknown:
+        rows.append([InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")])
+    lines.append("\n🔎 Yana qidirish uchun boshqa ism yozing.")
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3900):
+        last_chunk = i + 3900 >= len(text)
+        await msg.answer(text[i:i + 3900],
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if last_chunk and rows else None)
+
+
+@router.callback_query(F.data.startswith("reactivate:"))
+async def emp_reactivate(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    emp_id = int(cb.data.split(":")[1])
+    await db.update_employee(emp_id, active=1)
+    emp = await db.get_employee_by_id(emp_id)
+    await cb.answer("Qayta faollashtirildi ✅")
+    await cb.message.answer(f"♻️ {db.full_name(emp)} qayta faol qilindi.",
+                            reply_markup=kb.employee_manage_kb(emp))

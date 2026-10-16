@@ -856,19 +856,24 @@ def search_key(text):
     return " ".join(t.split())
 
 
-async def search_employees(query, linked_only=True):
-    """Ism (username) yoki telefon bo'yicha qidiradi. Kirill yoki lotinda yozilsa ham topadi."""
+def _query_match(qkey, name_key):
+    """So'rovning har bir so'zi ismda bor bo'lsa (tartibi muhim emas): 'nilufar sattarova' == 'Sattarova Nilufar'."""
+    return all(t in name_key for t in qkey.split())
+
+
+async def search_employees(query, linked_only=True, include_inactive=False):
+    """Ism (username) yoki telefon bo'yicha qidiradi. Kirill yoki lotinda, istalgan tartibda yozilsa ham topadi."""
     key = search_key(query)
     digits = "".join(c for c in (query or "") if c.isdigit())
     if not key:
         return []
     out = []
-    for e in await list_employees(active_only=True):
+    for e in await list_employees(active_only=not include_inactive):
         if linked_only and not e.get("telegram_id"):
             continue
         name_key = search_key(f"{e.get('first_name') or ''} {e.get('last_name') or ''}")
         phone = "".join(c for c in str(e.get("phone") or "") if c.isdigit())
-        if key in name_key or (len(digits) >= 3 and digits in phone):
+        if _query_match(key, name_key) or (len(digits) >= 3 and digits in phone):
             out.append(e)
         if len(out) >= 30:
             break
@@ -1754,3 +1759,26 @@ async def detach_name_alias(alias_key):
         await db.commit()
     return {"emp": await get_employee_by_id(emp_id), "alias": alias, "deleted": len(to_del),
             "months": sorted({d[:7] for _, _, d in to_del})}
+
+
+async def lookup_employee(query):
+    """Admin uchun to'liq qidiruv: faol + o'chirilgan xodimlar, Excel'dagi bog'langan ismlar,
+    FaceID guruhida ko'rilgan, lekin botda yo'q ismlar.
+    Qaytaradi: {'found': [(xodim, sabab)], 'unknown': [ism...]}"""
+    key = search_key(query)
+    found, seen = [], set()
+    for e in await search_employees(query, linked_only=False, include_inactive=True):
+        found.append((e, None)); seen.add(e["id"])
+    if key:
+        for k, alias, emp in await list_name_aliases():
+            if emp["id"] not in seen and _query_match(key, search_key(alias)):
+                found.append((emp, f"Excel'da «{alias}» nomi bilan")); seen.add(emp["id"])
+    unknown = []
+    if key:
+        try:
+            for it in await list_unknown():
+                if _query_match(key, search_key(it["name"])) and not await get_employee_by_name(it["name"]):
+                    unknown.append(it["name"])
+        except Exception:
+            pass
+    return {"found": found[:30], "unknown": unknown[:15]}

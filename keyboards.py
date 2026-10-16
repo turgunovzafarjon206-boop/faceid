@@ -209,6 +209,7 @@ def emp_department_kb(deps, emp_id):
 def admin_data_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")],
+        [InlineKeyboardButton(text="🔎 Xodim qidirish", callback_data="a:empsearch")],
         [InlineKeyboardButton(text="👥 Xodimlar ro'yxati", callback_data="a:listemp")],
         [InlineKeyboardButton(text="🗂 Xodim ma'lumoti", callback_data="a:empdata")],
         [InlineKeyboardButton(text="⬇️ Xodimlar ma'lumoti (Excel)", callback_data="a:empexcel")],
