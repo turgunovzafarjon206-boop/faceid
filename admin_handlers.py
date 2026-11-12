@@ -1414,6 +1414,7 @@ async def restore_do(cb: CallbackQuery, state: FSMContext):
         return
     try:
         shutil.copyfile(path, DB_PATH)
+        await db.init_db()          # eski zaxirada yo'q yangi ustun/jadvallarni qo'shadi
         await load_admins()
         n = await db.count_employees()
         await cb.message.answer(f"✅ Baza tiklandi. Endi {n} ta xodim bor.",

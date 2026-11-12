@@ -334,6 +334,16 @@ async def list_employees(active_only=True):
         return [await _row_to_emp(r) for r in rows]
 
 
+async def _ensure_employee_columns(db):
+    """Yangi ustunlar (bo'lim, filial, lavozim) bazada yo'q bo'lsa — qo'shadi (tartib muhim)."""
+    cur = await db.execute("PRAGMA table_info(employees)")
+    cols = [r[1] for r in await cur.fetchall()]
+    for col, typ in (("department_id", "INTEGER"), ("branch_id", "INTEGER"), ("position", "TEXT")):
+        if col not in cols:
+            await db.execute(f"ALTER TABLE employees ADD COLUMN {col} {typ}")
+            cols.append(col)
+
+
 async def update_employee(emp_id, **fields):
     if not fields:
         return
@@ -350,6 +360,8 @@ async def update_employee(emp_id, **fields):
         return
     vals.append(emp_id)
     async with aiosqlite.connect(DB_PATH) as db:
+        if "position" in fields:
+            await _ensure_employee_columns(db)
         await db.execute(f"UPDATE employees SET {','.join(sets)} WHERE id=?", vals)
         await db.commit()
 
