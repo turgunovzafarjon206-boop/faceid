@@ -38,6 +38,7 @@ async def faceid_poller(bot):
                     continue  # takror hodisa
                 if ev["ts"] > since:
                     since = ev["ts"]
+                await reports.maybe_send_late_alert(bot, emp, etype, ev["ts"])
                 await _notify(bot, emp, etype, ev["ts"])
         except Exception as e:
             log.warning("Poller xatosi: %s", e)

@@ -155,6 +155,7 @@ async def cb_info_view(cb: CallbackQuery):
     if emp:
         late = "hisoblanadi" if emp["count_late"] else "hisoblanmaydi"
         txt = (f"👤 Username: {db.full_name(emp)}\n"
+               + (f"💼 Lavozim: {db.position_label(emp)}\n" if db.position_label(emp) else "") +
                f"📞 Telefon: {emp['phone']}\n"
                f"🕐 Ish grafigi: {db.schedule_label(emp)}\n"
                f"⏰ Kechikish: {late}")

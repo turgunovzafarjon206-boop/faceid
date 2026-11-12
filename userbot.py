@@ -154,6 +154,9 @@ async def start_userbot(bot):
 
             log.info("Qayd: %s %s %s", parsed["name"], etype, parsed["ts"].strftime("%H:%M"))
 
+            # Kech qolgan bo'lsa — kechikish guruhiga (xodim botga ulanmagan bo'lsa ham)
+            await reports.maybe_send_late_alert(bot, emp, etype, parsed["ts"])
+
             if not emp["telegram_id"]:
                 return  # xodim botga ulanmagan
 

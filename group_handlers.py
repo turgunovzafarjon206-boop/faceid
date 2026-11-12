@@ -214,6 +214,8 @@ async def cmd_jamoa(msg: Message, command: CommandObject):
             dep = deps[e["department_id"]]
         link = "🟢" if e["telegram_id"] else "🔴"
         extra = f" — {dep}" if dep else ""
+        if db.position_label(e):
+            extra = f" · 💼 {db.position_label(e)}" + extra
         lines.append(f"{i}. {link} {db.full_name(e)}{extra} ({db.schedule_label(e)})")
     linked = sum(1 for e in emps if e["telegram_id"])
     lines.append(f"\n🟢 Botga ulangan: {linked} | 🔴 Ulanmagan: {len(emps) - linked}")

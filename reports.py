@@ -3,6 +3,7 @@ Hisobotlarni hisoblash va matn ko'rinishida chiqarish (o'zbekcha).
 """
 import datetime as dt
 import db
+from config import TZ
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -415,7 +416,7 @@ async def build_period_excel(employees, day_from, day_to, title):
     wb = Workbook()
     ws = wb.active
     ws.title = "Umumiy"
-    ws.append(["Xodim", "Telefon", "Bo'lim", "Filial", "Ishlagan kun", "Ishlangan vaqt",
+    ws.append(["Xodim", "Lavozim", "Telefon", "Bo'lim", "Filial", "Ishlagan kun", "Ishlangan vaqt",
                "Soat (jami)", "Ortiqcha", "Kech qolgan kun", "Kech qolish (daqiqa)", "Jarima (so'm)"])
 
     used_names = {"umumiy"}
@@ -449,7 +450,8 @@ async def build_period_excel(employees, day_from, day_to, title):
         sheet = wb.create_sheet(_safe_sheet_name(db.full_name(emp), used_names))
         _dep = await dep_name(emp.get('department_id')) or "Bo'limsiz"
         _br = await br_name(emp.get('branch_id')) or "Filialsiz"
-        sheet.append([f"👤 {db.full_name(emp)}  |  📞 {emp['phone']}  |  🏢 {_dep}  |  🏬 {_br}"])
+        _pos = f"  |  💼 {db.position_label(emp)}" if db.position_label(emp) else ""
+        sheet.append([f"👤 {db.full_name(emp)}{_pos}  |  📞 {emp['phone']}  |  🏢 {_dep}  |  🏬 {_br}"])
         sheet.append(["Sana", "Hafta kuni", "Darsga kelish vaqti", "Kirish", "Chiqish",
                       "Ishlangan vaqt", "Ortiqcha (daqiqa)", "Kechikish (daqiqa)", "Jarima (so'm)"])
 
@@ -507,14 +509,15 @@ async def build_period_excel(employees, day_from, day_to, title):
 
         # umumiy varaqqa qator
         ws.append([
-            db.full_name(emp), emp["phone"], await dep_name(emp.get("department_id")),
+            db.full_name(emp), db.position_label(emp) or "", emp["phone"],
+            await dep_name(emp.get("department_id")),
             await br_name(emp.get("branch_id")),
             worked_days, fmt_duration(worked_total), round(worked_total / 60, 1),
             fmt_duration(over_total), late_days, late_total,
             fine_total if emp["count_late"] else 0,
         ])
 
-    _style_header(ws, 11)
+    _style_header(ws, 12)
     _autosize(ws)
     ws.freeze_panes = "A2"
 
@@ -602,7 +605,7 @@ async def build_employees_excel():
     wb = Workbook()
     ws = wb.active
     ws.title = "Xodimlar"
-    headers = ["№", "Username", "Telefon", "Bo'lim", "Ish grafigi",
+    headers = ["№", "Username", "Lavozim", "Telefon", "Bo'lim", "Ish grafigi",
                "Kechikish", "Telegram"] + [r["title"] for r in reqs]
     ws.append(headers)
 
@@ -612,7 +615,8 @@ async def build_employees_excel():
         if emp["telegram_id"]:
             connected += 1
         row = [
-            i, db.full_name(emp), emp["phone"], await dep_name(emp.get("department_id")),
+            i, db.full_name(emp), db.position_label(emp) or "", emp["phone"],
+            await dep_name(emp.get("department_id")),
             db.schedule_label(emp),
             "hisoblanadi" if emp["count_late"] else "hisoblanmaydi",
             "🟢 ulangan" if emp["telegram_id"] else "🔴 ulanmagan",
@@ -638,7 +642,7 @@ async def build_employees_excel():
 
     # jami qatori
     ws.append([])
-    ws.append(["", f"Jami: {len(emps)} ta xodim", "", "", "", "",
+    ws.append(["", f"Jami: {len(emps)} ta xodim", "", "", "", "", "",
                f"Ulangan: {connected}, ulanmagan: {len(emps) - connected}"])
 
     # 2-varaq: to'liq to'ldirmaganlar
@@ -665,3 +669,70 @@ async def day_fine(emp, day):
     series = await _late_series(emp, first, day)
     info, _ = _apply_fines(series)
     return info.get(day, (0, 0, 0))[0]
+
+
+
+# ==================== Kech qolganlar guruhiga xabar ====================
+async def late_alert_text(emp, day):
+    """Belgilangan ish vaqtidan kech qolgan bo'lsa — guruh uchun matn, aks holda None.
+    Dars jadvali bo'yicha kechikish (ustozlar) bu yerda hisobga olinmaydi."""
+    if not emp.get("count_late") or not db.has_schedule(emp):
+        return None
+    events = await db.events_for_day(emp["id"], day)
+    r = compute_day(emp, events)
+    if not r or not r.get("kirish"):
+        return None
+    await _apply_schedule(emp, day, r, await db.lesson_context(emp))
+    if r.get("lesson_based"):
+        return None
+    _apply_exemption(emp, day, r, await db.exempt_map_for(emp["id"]))
+    late = r.get("kechikish_min", 0)
+    if late <= 0:
+        return None
+    lines = ["⏰ <b>Kech qoldi</b>", f"👤 <b>{db.full_name(emp)}</b>"]
+    pos = db.position_label(emp)
+    if pos:
+        lines.append(f"💼 {pos}")
+    extra = []
+    if emp.get("department_id"):
+        d = await db.get_department(emp["department_id"])
+        if d:
+            extra.append(f"🏢 {d['name']}")
+    if emp.get("branch_id"):
+        b = await db.get_branch(emp["branch_id"])
+        if b:
+            extra.append(f"🏬 {b['name']}")
+    if extra:
+        lines.append(" · ".join(extra))
+    lines += [f"📅 {uz_date(day)}",
+              f"🕘 Ish vaqti: {emp['work_start']} edi",
+              f"🟢 Keldi: {r['kirish'].strftime('%H:%M')}",
+              f"❗️ {fmt_duration(late)} kech qoldi"]
+    return "\n".join(lines)
+
+
+async def maybe_send_late_alert(bot, emp, etype, ts):
+    """Kirish qayd etilganda: xodim kech qolgan bo'lsa, sozlangan guruhga bir marta xabar yuboradi."""
+    try:
+        if etype != "in":
+            return
+        gid = await db.get_setting("late_group_id")
+        if not gid:
+            return
+        day = ts.strftime("%Y-%m-%d")
+        if day != dt.datetime.now(TZ).strftime("%Y-%m-%d"):
+            return          # eski (tarixdan o'qilgan) qaydlar uchun yuborilmaydi
+        text = await late_alert_text(emp, day)
+        if not text:
+            return
+        if not await db.mark_late_alert(emp["id"], day):
+            return          # bugun allaqachon yuborilgan
+        try:
+            await bot.send_message(int(gid), text)
+        except Exception as e:
+            await db.unmark_late_alert(emp["id"], day)
+            import logging
+            logging.getLogger("late_alert").warning("Kechikish guruhiga yuborilmadi: %s", e)
+    except Exception as e:
+        import logging
+        logging.getLogger("late_alert").warning("Kechikish xabari xatosi: %s", e)

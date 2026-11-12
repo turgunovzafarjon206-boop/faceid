@@ -197,6 +197,12 @@ async def init_db():
         _cols2 = [r[1] for r in await cur.fetchall()]
         if "branch_id" not in _cols2:
             await db.execute("ALTER TABLE employees ADD COLUMN branch_id INTEGER")
+        # employees: lavozim ustuni (branch_id dan keyin bo'lishi shart)
+        cur = await db.execute("PRAGMA table_info(employees)")
+        if "position" not in [r[1] for r in await cur.fetchall()]:
+            await db.execute("ALTER TABLE employees ADD COLUMN position TEXT")
+        await db.execute("CREATE TABLE IF NOT EXISTS late_alerts (employee_id INTEGER NOT NULL, "
+                         "day TEXT NOT NULL, sent_at TEXT, UNIQUE(employee_id, day))")
         # late_exemptions: from_min ustuni (NULL = butun kun, son = shu vaqtdan boshlab hisoblanadi)
         cur = await db.execute("PRAGMA table_info(late_exemptions)")
         _ecols = [r[1] for r in await cur.fetchall()]
@@ -253,8 +259,10 @@ async def _row_to_emp(row):
         return None
     keys = ["id", "first_name", "last_name", "phone", "faceid_user_id",
             "telegram_id", "work_start", "work_end", "grace_minutes",
-            "count_late", "active", "created_at", "department_id", "branch_id"]
-    return dict(zip(keys, row))
+            "count_late", "active", "created_at", "department_id", "branch_id", "position"]
+    d = dict(zip(keys, row))
+    d.setdefault("position", None)
+    return d
 
 
 async def get_employee_by_phone(phone):
@@ -330,7 +338,7 @@ async def update_employee(emp_id, **fields):
     if not fields:
         return
     allowed = {"first_name", "last_name", "phone", "faceid_user_id",
-               "work_start", "work_end", "grace_minutes", "count_late", "active"}
+               "work_start", "work_end", "grace_minutes", "count_late", "active", "position"}
     sets, vals = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -1794,3 +1802,27 @@ async def lookup_employee(query):
         except Exception:
             pass
     return {"found": found[:30], "unknown": unknown[:15]}
+
+
+
+# ==================== Kech qolganlar guruhi ====================
+async def mark_late_alert(emp_id, day):
+    """Shu kun uchun guruhga xabar hali yuborilmagan bo'lsa — belgilaydi va True qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS late_alerts (employee_id INTEGER NOT NULL, "
+                         "day TEXT NOT NULL, sent_at TEXT, UNIQUE(employee_id, day))")
+        cur = await db.execute("INSERT OR IGNORE INTO late_alerts(employee_id, day, sent_at) VALUES(?,?,?)",
+                               (emp_id, day, now_local().isoformat()))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def unmark_late_alert(emp_id, day):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM late_alerts WHERE employee_id=? AND day=?", (emp_id, day))
+        await db.commit()
+
+
+def position_label(emp):
+    p = str(emp.get("position") or "").strip()
+    return p or None

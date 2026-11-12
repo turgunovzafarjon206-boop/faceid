@@ -106,6 +106,7 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="🗓 Dars jadval belgilash (rasm)", callback_data="a:lessonimg")],
         [InlineKeyboardButton(text="📥 Kirish-chiqish yuklash (Excel)", callback_data="a:attxls")],
         [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
+        [InlineKeyboardButton(text="🚨 Kech qolganlar guruhi", callback_data="a:lategrp")],
         [InlineKeyboardButton(text="🕒 Vaqtni o'zgartirish", callback_data="a:settime")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
@@ -363,6 +364,7 @@ def employee_manage_kb(emp):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Username", callback_data=f"edit:name:{emp['id']}")],
         [InlineKeyboardButton(text="📞 Telefon", callback_data=f"edit:phone:{emp['id']}")],
+        [InlineKeyboardButton(text="💼 Lavozim", callback_data=f"edit:position:{emp['id']}")],
         [InlineKeyboardButton(text="🕐 Ish grafigi", callback_data=f"edit:schedule:{emp['id']}")],
         [InlineKeyboardButton(text=late, callback_data=f"togglelate:{emp['id']}")],
         [InlineKeyboardButton(text="🏢 Bo'lim tayinlash", callback_data=f"empdep:{emp['id']}")],

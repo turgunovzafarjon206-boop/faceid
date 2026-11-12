@@ -39,6 +39,7 @@ async def load_admins():
 class AddEmp(StatesGroup):
     username = State()
     phone = State()
+    position = State()
     schedule = State()
     countlate = State()
     department = State()
@@ -202,6 +203,18 @@ async def add_username(msg: Message, state: FSMContext):
 @router.message(AddEmp.phone, F.text)
 async def add_phone(msg: Message, state: FSMContext):
     await state.update_data(phone=msg.text.strip())
+    await state.set_state(AddEmp.position)
+    await msg.answer("💼 Lavozimi (masalan: O'qituvchi, Menejer, Qorovul).\n"
+                     "Kerak bo'lmasa - (chiziqcha) yuboring:")
+
+
+_DASHES = ("-", "—", "–", "yo'q", "yoq")
+
+
+@router.message(AddEmp.position, F.text)
+async def add_position(msg: Message, state: FSMContext):
+    val = msg.text.strip()
+    await state.update_data(position=None if val.lower() in _DASHES else val[:60])
     await state.set_state(AddEmp.schedule)
     await msg.answer("Ish grafigi (format: 08:00-18:00).\n"
                      "Grafik kerak bo'lmasa - (chiziqcha) yuboring:")
@@ -290,6 +303,8 @@ async def _create_employee(target, state: FSMContext, dep_id, branch_id=None):
         await target.answer(f"❌ Xatolik (telefon takrorlangan bo'lishi mumkin):\n{e}")
         await state.clear()
         return
+    if data.get("position"):
+        await db.update_employee(emp_id, position=data["position"])
     if dep_id:
         await db.set_employee_department(emp_id, dep_id)
     if branch_id:
@@ -306,6 +321,7 @@ async def _create_employee(target, state: FSMContext, dep_id, branch_id=None):
     await state.clear()
     await target.answer(
         f"✅ Xodim qo'shildi!\n\n👤 Username: {data['username']}\n"
+        f"💼 Lavozim: {data.get('position') or 'yo‘q'}\n"
         f"📞 {data['phone']}\n🕐 {'yo‘q (grafiksiz)' if data['ws'] == '-' else data['ws'] + '-' + data['we']}\n"
         f"⏰ Kechikish: {cl}{dep_name}{br_name}\n\n"
         f"Endi xodim botga /start bosib, shu raqam bilan kirsin.",
@@ -344,7 +360,8 @@ async def show_emp(cb: CallbackQuery):
         b = await db.get_branch(emp["branch_id"])
         br = b["name"] if b else "yo'q"
     await cb.message.answer(
-        f"👤 Username: {db.full_name(emp)}\n📞 {emp['phone']}\n"
+        f"👤 Username: {db.full_name(emp)}\n💼 Lavozim: {db.position_label(emp) or 'yo‘q'}\n"
+        f"📞 {emp['phone']}\n"
         f"🕐 Ish grafigi: {db.schedule_label(emp)}\n🏢 Bo'lim: {dep}\n🏬 Filial: {br}\n"
         f"👔 Rol: {db.ROLE_NAMES.get(await db.get_role(emp['id']), 'yo‘q')}\n"
         f"⏰ Kechikish: {'hisoblanadi' if emp['count_late'] else 'hisoblanmaydi'}\n"
@@ -391,6 +408,7 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
     prompts = {
         "name": "Yangi username:",
         "phone": "Yangi telefon raqam (901234567):",
+        "position": "💼 Yangi lavozim (masalan: O'qituvchi).\nO'chirish uchun - (chiziqcha) yuboring:",
         "faceid": "Yangi FaceID ID:",
         "schedule": "Yangi ish grafigi (08:00-18:00).\nGrafiksiz qilish uchun - (chiziqcha) yuboring:",
     }
@@ -407,6 +425,8 @@ async def save_edit(msg: Message, state: FSMContext):
             await db.update_employee(emp_id, first_name=val, last_name="")
         elif field == "phone":
             await db.update_employee(emp_id, phone=val)
+        elif field == "position":
+            await db.update_employee(emp_id, position=None if val.lower() in _DASHES else val[:60])
         elif field == "faceid":
             await db.update_employee(emp_id, faceid_user_id=val)
         elif field == "schedule" and val in ("-", "—", "–", "yo'q", "yoq"):
@@ -1166,7 +1186,11 @@ async def rem_send_do(msg: Message, state: FSMContext):
 # ==================== Adminlar boshqaruvi ====================
 @router.message(Command("id"))
 async def cmd_id(msg: Message):
-    await msg.answer(f"🆔 Sizning Telegram ID: `{msg.from_user.id}`", parse_mode="Markdown")
+    if msg.chat.type in ("group", "supergroup"):
+        await msg.answer(f"🆔 Guruh ID: <code>{msg.chat.id}</code>\n"
+                         f"🆔 Sizning ID: <code>{msg.from_user.id}</code>")
+        return
+    await msg.answer(f"🆔 Sizning Telegram ID: <code>{msg.from_user.id}</code>")
 
 
 @router.callback_query(F.data == "a:admins")
@@ -2850,7 +2874,8 @@ async def emp_search_run(msg: Message, state: FSMContext):
                 mark, status = "🟢", "botga ulangan"
             else:
                 mark, status = "🔴", "botga hali ulanmagan"
-            info = [f"📞 {e.get('phone') or '-'}", status]
+            info = ([f"💼 {db.position_label(e)}"] if db.position_label(e) else []) + \
+                [f"📞 {e.get('phone') or '-'}", status]
             if dep:
                 info.append(f"🏢 {dep['name']}")
             if br:
@@ -2969,3 +2994,98 @@ async def nosch_action(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await cb.answer()
+
+
+# ==================== 🚨 Kech qolganlar guruhi ====================
+class LateGroup(StatesGroup):
+    wait_id = State()
+
+
+def _lategrp_kb(on):
+    rows = [[InlineKeyboardButton(text="✏️ Guruh ID kiritish", callback_data="lg:set")]]
+    if on:
+        rows.append([InlineKeyboardButton(text="🧪 Sinov xabari", callback_data="lg:test")])
+        rows.append([InlineKeyboardButton(text="⛔️ O'chirish", callback_data="lg:off")])
+    rows.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="a:fidback")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _lategrp_text():
+    gid = await db.get_setting("late_group_id")
+    title = await db.get_setting("late_group_title")
+    status = (f"✅ Yoqilgan: <b>{title or 'guruh'}</b> (<code>{gid}</code>)" if gid else "⛔️ O'chirilgan")
+    return ("🚨 <b>Kech qolganlar guruhi</b>\n\n"
+            "Xodim belgilangan ish vaqtidan kech kelsa, shu guruhga darhol xabar boradi:\n"
+            "<i>«Ish vaqti 09:00 edi — 09:17 da keldi, 17 daqiqa kech qoldi»</i>\n"
+            "• Grafiksiz xodimlar, kechikishi hisoblanmaydiganlar va kechirim berilgan kunlar yuborilmaydi.\n"
+            "• Ustozlarning dars jadvali bo'yicha kechikishi yuborilmaydi (u faqat Excel'da).\n"
+            "• Har bir xodim uchun kuniga bir marta.\n\n"
+            f"Holat: {status}")
+
+
+@router.callback_query(F.data == "a:lategrp")
+async def lategrp_menu(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    on = bool(await db.get_setting("late_group_id"))
+    await cb.message.answer(await _lategrp_text(), reply_markup=_lategrp_kb(on))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "lg:set")
+async def lategrp_set(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(LateGroup.wait_id)
+    await cb.message.answer(
+        "1️⃣ Botni guruhga qo'shing va <b>admin</b> qiling.\n"
+        "2️⃣ Guruhda <code>/id</code> deb yozing — bot guruh ID sini aytadi (masalan <code>-1001234567890</code>).\n"
+        "3️⃣ Shu ID ni shu yerga yuboring:")
+    await cb.answer()
+
+
+@router.message(LateGroup.wait_id, F.text)
+async def lategrp_save(msg: Message, state: FSMContext):
+    raw = msg.text.strip().replace(" ", "")
+    try:
+        gid = int(raw)
+    except ValueError:
+        await msg.answer("❌ ID faqat raqam bo'lishi kerak, masalan: <code>-1001234567890</code>")
+        return
+    try:
+        chat = await msg.bot.get_chat(gid)
+        await msg.bot.send_message(gid, "✅ Bu guruhga kech qolgan xodimlar haqida xabar yuboriladi.")
+    except Exception as e:
+        await msg.answer(f"❌ Guruhga yozib bo'lmadi: {e}\n\n"
+                         "Bot guruhga qo'shilganini va admin ekanini tekshiring, so'ng ID ni qayta yuboring.")
+        return
+    await db.set_setting("late_group_id", str(gid))
+    await db.set_setting("late_group_title", getattr(chat, "title", None) or str(gid))
+    await state.clear()
+    await msg.answer(await _lategrp_text(), reply_markup=_lategrp_kb(True))
+
+
+@router.callback_query(F.data == "lg:test")
+async def lategrp_test(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    gid = await db.get_setting("late_group_id")
+    if not gid:
+        return await cb.answer("Guruh kiritilmagan", show_alert=True)
+    sample = ("⏰ <b>Kech qoldi</b> (sinov xabari)\n👤 <b>Namuna Xodim</b>\n💼 O'qituvchi\n"
+              f"📅 {reports.uz_date(dt.datetime.now(TZ).strftime('%Y-%m-%d'))}\n"
+              "🕘 Ish vaqti: 09:00 edi\n🟢 Keldi: 09:17\n❗️ 17 daqiqa kech qoldi")
+    try:
+        await cb.bot.send_message(int(gid), sample)
+        await cb.answer("Yuborildi ✅")
+    except Exception as e:
+        await cb.answer(f"Yuborilmadi: {str(e)[:150]}", show_alert=True)
+
+
+@router.callback_query(F.data == "lg:off")
+async def lategrp_off(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await db.set_setting("late_group_id", "")
+    await cb.answer("O'chirildi")
+    await cb.message.answer(await _lategrp_text(), reply_markup=_lategrp_kb(False))
