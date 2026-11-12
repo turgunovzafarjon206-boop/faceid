@@ -546,6 +546,10 @@ async def clear_unknown():
 # ---------------- Xabar shablonlari (templates) ----------------
 DEFAULT_TPL_IN = "🟢 Kirish qayd etildi\n🕐 Vaqt: {time}{late}\n\nXush kelibsiz! 😊"
 DEFAULT_TPL_OUT = "🔴 Chiqish qayd etildi\n🕐 Vaqt: {time}\n⏱ Ishlangan vaqt: {worked}\n\nYaxshi boring! 👋"
+DEFAULT_TPL_LATE = ("⏰ <b>Kech qoldi</b>\n👤 <b>{name}</b>\n💼 {position}\n🏢 {department}\n🏬 {branch}\n"
+                    "📅 {date}\n🕘 Ish vaqti: {start} edi\n🟢 Keldi: {came}\n❗️ {late} kech qoldi")
+DEFAULT_TPL_EARLY = ("🏃 <b>Erta ketdi</b>\n👤 <b>{name}</b>\n💼 {position}\n🏢 {department}\n🏬 {branch}\n"
+                     "📅 {date}\n🕕 Ish vaqti: {end} gacha edi\n🔴 Ketdi: {left}\n❗️ {early} erta ketdi")
 DEFAULT_TPL_WARN = "⚠️ Eslatma\nIltimos, kerakli ma'lumotlarni to'ldiring."
 DEFAULT_TPL_SURVEY = "📊 So'rovnoma\nIltimos, quyidagi savollarga javob bering."
 
@@ -1826,3 +1830,74 @@ async def unmark_late_alert(emp_id, day):
 def position_label(emp):
     p = str(emp.get("position") or "").strip()
     return p or None
+
+
+
+async def mark_early_alert(emp_id, day):
+    """Erta ketganlik xabari shu kun uchun hali yuborilmagan bo'lsa — belgilaydi va True qaytaradi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS early_alerts (employee_id INTEGER NOT NULL, "
+                         "day TEXT NOT NULL, sent_at TEXT, UNIQUE(employee_id, day))")
+        cur = await db.execute("INSERT OR IGNORE INTO early_alerts(employee_id, day, sent_at) VALUES(?,?,?)",
+                               (emp_id, day, now_local().isoformat()))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def unmark_early_alert(emp_id, day):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM early_alerts WHERE employee_id=? AND day=?", (emp_id, day))
+        await db.commit()
+
+
+# ==================== Lavozimlarni matndan yozish ====================
+async def positions_export_text():
+    """'Ism — Lavozim' qatorlari (lavozimi yo'qlarda bo'sh)."""
+    return "\n".join(f"{full_name(e)} — {position_label(e) or ''}".rstrip()
+                     for e in await list_employees())
+
+
+async def _match_employee_exact(name, emps):
+    key = _alias_key(name)
+    hits = [e for e in emps if _alias_key(full_name(e)) == key]
+    return hits[0] if len(hits) == 1 else (None if not hits else "many")
+
+
+async def bulk_assign_positions(text):
+    """Har qator: 'Ism — Lavozim' yoki shunchaki 'Ism Lavozim' (ism bazadagi bilan bir xil bo'lsa).
+    Lavozim o'rniga '-' — lavozimni o'chiradi. Qaytaradi: {'ok', 'not_found', 'many', 'items'}."""
+    emps = await list_employees()
+    ok, not_found, many, items = 0, [], [], []
+    for raw in str(text).splitlines():
+        line = raw.strip().lstrip("•*-").strip()
+        if not line:
+            continue
+        emp, pos = None, None
+        for sep in ("—", "–", "\t", " - ", ":", "|"):
+            if sep in line:
+                name, pos = [x.strip() for x in line.split(sep, 1)]
+                emp = await _match_employee_exact(name, emps)
+                if emp is None:
+                    found = await search_employees(name, linked_only=False)
+                    emp = found[0] if len(found) == 1 else ("many" if found else None)
+                break
+        else:
+            # Ajratgichsiz: eng uzun mos keladigan ism boshi — ism, qolgani — lavozim
+            toks = line.split()
+            for k in range(len(toks) - 1, 0, -1):
+                cand = await _match_employee_exact(" ".join(toks[:k]), emps)
+                if cand:
+                    emp, pos = cand, " ".join(toks[k:])
+                    break
+        if emp == "many":
+            many.append(line)
+            continue
+        if not emp or pos is None:
+            not_found.append(line)
+            continue
+        pos = pos.strip()
+        newval = None if pos in ("", "-", "—", "–") else pos[:60]
+        await update_employee(emp["id"], position=newval)
+        ok += 1
+        items.append((full_name(emp), newval))
+    return {"ok": ok, "not_found": not_found, "many": many, "items": items}

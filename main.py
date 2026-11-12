@@ -145,6 +145,8 @@ async def main():
     # Fon jarayonlari
     asyncio.create_task(faceid_poller(bot))
     asyncio.create_task(daily_report_loop(bot))
+    import reports as _reports
+    asyncio.create_task(_reports.early_leave_loop(bot))
     asyncio.create_task(auto_refresh_menus(bot))
 
     # Admin: /yangilash — menyuni hammaga qo'lda yangilash

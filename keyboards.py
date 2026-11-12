@@ -106,7 +106,7 @@ def admin_faceid_kb():
         [InlineKeyboardButton(text="🗓 Dars jadval belgilash (rasm)", callback_data="a:lessonimg")],
         [InlineKeyboardButton(text="📥 Kirish-chiqish yuklash (Excel)", callback_data="a:attxls")],
         [InlineKeyboardButton(text="🚫 Kechikishni hisoblamaslik", callback_data="a:exempt")],
-        [InlineKeyboardButton(text="🚨 Kech qolganlar guruhi", callback_data="a:lategrp")],
+        [InlineKeyboardButton(text="🚨 Kech qolgan / erta ketganlar guruhi", callback_data="a:lategrp")],
         [InlineKeyboardButton(text="🕒 Vaqtni o'zgartirish", callback_data="a:settime")],
         [InlineKeyboardButton(text="🔄 Guruh tarixini o'qish", callback_data="a:backfill")],
         [InlineKeyboardButton(text="📊 Hisobot (Excel)", callback_data="a:report")],
@@ -120,6 +120,8 @@ def templates_kb():
          InlineKeyboardButton(text="🔴 Chiqish matni", callback_data="tpl:out")],
         [InlineKeyboardButton(text="⚠️ Ogohlantirish matni", callback_data="tpl:warn"),
          InlineKeyboardButton(text="📊 So'rovnoma matni", callback_data="tpl:survey")],
+        [InlineKeyboardButton(text="⏰ Kech qolish (guruhga)", callback_data="tpl:late"),
+         InlineKeyboardButton(text="🏃 Erta ketish (guruhga)", callback_data="tpl:early")],
         [InlineKeyboardButton(text="↩️ Standartga qaytarish", callback_data="tpl:reset")],
     ])
 
@@ -212,6 +214,7 @@ def admin_data_kb():
         [InlineKeyboardButton(text="➕ Xodim qo'shish", callback_data="a:addemp")],
         [InlineKeyboardButton(text="🔎 Xodim qidirish", callback_data="a:empsearch")],
         [InlineKeyboardButton(text="👥 Xodimlar ro'yxati", callback_data="a:listemp")],
+        [InlineKeyboardButton(text="💼 Lavozimlarni yozish (matn)", callback_data="pos:bulk")],
         [InlineKeyboardButton(text="🕐 Grafiksiz qilish («-» kiritilganlar)", callback_data="a:nosched")],
         [InlineKeyboardButton(text="🗂 Xodim ma'lumoti", callback_data="a:empdata")],
         [InlineKeyboardButton(text="⬇️ Xodimlar ma'lumoti (Excel)", callback_data="a:empexcel")],

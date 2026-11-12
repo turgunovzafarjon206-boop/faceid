@@ -1064,9 +1064,13 @@ async def tpl_action(cb: CallbackQuery, state: FSMContext):
         await db.set_setting("tpl_out", db.DEFAULT_TPL_OUT)
         await db.set_setting("tpl_warn", db.DEFAULT_TPL_WARN)
         await db.set_setting("tpl_survey", db.DEFAULT_TPL_SURVEY)
+        await db.set_setting("tpl_late", db.DEFAULT_TPL_LATE)
+        await db.set_setting("tpl_early", db.DEFAULT_TPL_EARLY)
         await cb.answer("Standartga qaytarildi ✅")
         await cb.message.answer("↩️ Barcha matnlar standart holatga qaytarildi.")
         return
+    if what in ("late", "early"):
+        return await _grp_tpl_prompt(cb, state, what)
     keymap = {"in": "tpl_in", "out": "tpl_out", "warn": "tpl_warn", "survey": "tpl_survey"}
     await state.set_state(TplState.value)
     await state.update_data(which=keymap.get(what, "tpl_in"))
@@ -1077,9 +1081,63 @@ async def tpl_action(cb: CallbackQuery, state: FSMContext):
 @router.message(TplState.value, F.text)
 async def tpl_save(msg: Message, state: FSMContext):
     data = await state.get_data()
-    await db.set_setting(data["which"], msg.text)
+    which = data["which"]
+    if which in ("tpl_late", "tpl_early"):
+        # Telegram'dagi qalin/kursiv formatlash saqlanadi; qo'lda yozilgan <b>..</b> ham ishlaydi
+        import re as _re2
+        txt = _re2.sub(r"&lt;(/?)(b|i|u|s|code)&gt;", r"<\1\2>", msg.html_text)
+        await db.set_setting(which, txt)
+        await state.clear()
+        await msg.answer("✅ Matn saqlandi. Guruhda shunday ko'rinadi:", reply_markup=kb.admin_menu())
+        preview = reports.render_group_tpl(txt, _sample_group_vals())
+        try:
+            await msg.answer(preview)
+        except Exception:
+            await msg.answer(preview, parse_mode=None)
+        return
+    await db.set_setting(which, msg.text)
     await state.clear()
     await msg.answer("✅ Matn saqlandi.", reply_markup=kb.admin_menu())
+
+
+def _sample_group_vals():
+    return {"name": "Ali Valiyev", "position": "O'qituvchi", "department": "O'quv bo'limi",
+            "branch": "Uchtepa filiali", "date": reports.uz_date(dt.datetime.now(TZ).strftime("%Y-%m-%d")),
+            "start": "09:00", "end": "18:00", "came": "09:17", "late": "17 daqiqa", "late_min": "17",
+            "left": "16:40", "early": "1 soat 20 daqiqa", "early_min": "80"}
+
+
+_GRP_TPL_HELP = {
+    "late": ("⏰ Kech qolish", "tpl_late",
+             "{name} — ism\n{position} — lavozim\n{department} — bo'lim\n{branch} — filial\n"
+             "{date} — sana\n{start} — ish boshlanishi (09:00)\n{came} — kelgan vaqti (09:17)\n"
+             "{late} — qancha kech (17 daqiqa)\n{late_min} — kechikish daqiqada (17)"),
+    "early": ("🏃 Erta ketish", "tpl_early",
+              "{name} — ism\n{position} — lavozim\n{department} — bo'lim\n{branch} — filial\n"
+              "{date} — sana\n{end} — ish tugashi (18:00)\n{left} — ketgan vaqti (16:40)\n"
+              "{early} — qancha erta (1 soat 20 daqiqa)\n{early_min} — daqiqada (80)"),
+}
+
+
+async def _grp_tpl_prompt(cb, state, what):
+    import html as _html
+    title, key, help_ = _GRP_TPL_HELP[what]
+    default = db.DEFAULT_TPL_LATE if what == "late" else db.DEFAULT_TPL_EARLY
+    cur = await db.get_template(key, default)
+    await state.set_state(TplState.value)
+    await state.update_data(which=key)
+    await cb.message.answer(f"📝 <b>{title} — guruhga boradigan xabar</b>\n\nHozirgi matn 👇 "
+                            "(nusxalab, o'zgartirib yuborsangiz bo'ladi):")
+    try:
+        await cb.message.answer(cur)
+    except Exception:
+        await cb.message.answer(cur, parse_mode=None)
+    await cb.message.answer(
+        f"Ishlatsa bo'ladigan belgilar:\n{_html.escape(help_)}\n\n"
+        "• Qatordagi belgi bo'sh bo'lsa (masalan lavozimi yo'q) — o'sha qator chiqmaydi.\n"
+        "• Telegram'da qalin/kursiv qilsangiz — saqlanadi.\n\n"
+        "✍️ Yangi matnni yuboring:")
+    await cb.answer()
 
 
 # ==================== Eslatma (to'ldirmaganlar) ====================
@@ -3002,7 +3060,9 @@ class LateGroup(StatesGroup):
 
 
 def _lategrp_kb(on):
-    rows = [[InlineKeyboardButton(text="✏️ Guruh ID kiritish", callback_data="lg:set")]]
+    rows = [[InlineKeyboardButton(text="✏️ Guruh ID kiritish", callback_data="lg:set")],
+            [InlineKeyboardButton(text="📝 Kech qolish matni", callback_data="tpl:late"),
+             InlineKeyboardButton(text="📝 Erta ketish matni", callback_data="tpl:early")]]
     if on:
         rows.append([InlineKeyboardButton(text="🧪 Sinov xabari", callback_data="lg:test")])
         rows.append([InlineKeyboardButton(text="⛔️ O'chirish", callback_data="lg:off")])
@@ -3014,12 +3074,15 @@ async def _lategrp_text():
     gid = await db.get_setting("late_group_id")
     title = await db.get_setting("late_group_title")
     status = (f"✅ Yoqilgan: <b>{title or 'guruh'}</b> (<code>{gid}</code>)" if gid else "⛔️ O'chirilgan")
-    return ("🚨 <b>Kech qolganlar guruhi</b>\n\n"
-            "Xodim belgilangan ish vaqtidan kech kelsa, shu guruhga darhol xabar boradi:\n"
+    return ("🚨 <b>Kech qolgan / erta ketganlar guruhi</b>\n\n"
+            "⏰ Xodim ish vaqtidan <b>kech kelsa</b> — darhol xabar boradi:\n"
             "<i>«Ish vaqti 09:00 edi — 09:17 da keldi, 17 daqiqa kech qoldi»</i>\n"
+            "🏃 Ish vaqti tugashidan <b>oldin ketib, qaytib kelmasa</b> — ish vaqti tugagach xabar boradi:\n"
+            "<i>«Ish vaqti 18:00 gacha edi — 16:40 da ketdi, 1 soat 20 daqiqa erta ketdi»</i>\n"
+            "(tushlikka chiqib qaytib kelganlar hisoblanmaydi)\n\n"
             "• Grafiksiz xodimlar, kechikishi hisoblanmaydiganlar va kechirim berilgan kunlar yuborilmaydi.\n"
-            "• Ustozlarning dars jadvali bo'yicha kechikishi yuborilmaydi (u faqat Excel'da).\n"
-            "• Har bir xodim uchun kuniga bir marta.\n\n"
+            "• Ustozlarning dars jadvali bo'yicha kunlari yuborilmaydi (faqat Excel'da).\n"
+            "• Har bir xodim uchun kuniga bittadan.\n\n"
             f"Holat: {status}")
 
 
@@ -3054,7 +3117,7 @@ async def lategrp_save(msg: Message, state: FSMContext):
         return
     try:
         chat = await msg.bot.get_chat(gid)
-        await msg.bot.send_message(gid, "✅ Bu guruhga kech qolgan xodimlar haqida xabar yuboriladi.")
+        await msg.bot.send_message(gid, "✅ Bu guruhga kech qolgan va erta ketgan xodimlar haqida xabar yuboriladi.")
     except Exception as e:
         await msg.answer(f"❌ Guruhga yozib bo'lmadi: {e}\n\n"
                          "Bot guruhga qo'shilganini va admin ekanini tekshiring, so'ng ID ni qayta yuboring.")
@@ -3072,11 +3135,12 @@ async def lategrp_test(cb: CallbackQuery):
     gid = await db.get_setting("late_group_id")
     if not gid:
         return await cb.answer("Guruh kiritilmagan", show_alert=True)
-    sample = ("⏰ <b>Kech qoldi</b> (sinov xabari)\n👤 <b>Namuna Xodim</b>\n💼 O'qituvchi\n"
-              f"📅 {reports.uz_date(dt.datetime.now(TZ).strftime('%Y-%m-%d'))}\n"
-              "🕘 Ish vaqti: 09:00 edi\n🟢 Keldi: 09:17\n❗️ 17 daqiqa kech qoldi")
+    vals = _sample_group_vals()
+    late_t = reports.render_group_tpl(await db.get_template("tpl_late", db.DEFAULT_TPL_LATE), vals)
+    early_t = reports.render_group_tpl(await db.get_template("tpl_early", db.DEFAULT_TPL_EARLY), vals)
     try:
-        await cb.bot.send_message(int(gid), sample)
+        await reports.send_group_html(cb.bot, gid, "🧪 <i>Sinov xabari</i>\n\n" + late_t)
+        await reports.send_group_html(cb.bot, gid, "🧪 <i>Sinov xabari</i>\n\n" + early_t)
         await cb.answer("Yuborildi ✅")
     except Exception as e:
         await cb.answer(f"Yuborilmadi: {str(e)[:150]}", show_alert=True)
@@ -3089,3 +3153,49 @@ async def lategrp_off(cb: CallbackQuery):
     await db.set_setting("late_group_id", "")
     await cb.answer("O'chirildi")
     await cb.message.answer(await _lategrp_text(), reply_markup=_lategrp_kb(False))
+
+
+# ==================== 💼 Lavozimlarni matndan yozish ====================
+class PosBulk(StatesGroup):
+    wait = State()
+
+
+@router.callback_query(F.data == "pos:bulk")
+async def pos_bulk_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    await state.set_state(PosBulk.wait)
+    await cb.message.answer(
+        "💼 <b>Lavozimlarni yozish</b>\n\n"
+        "Har qatorga xodim ismi va lavozimini yozib yuboring:\n"
+        "<code>Ali Valiyev — O'qituvchi\nTolipova Nodiraxon Menejer</code>\n\n"
+        "• Lavozimlar ro'yxati yo'q — nima yozsangiz, shu saqlanadi.\n"
+        "• Ism botdagidek bo'lsa, «—» shart emas: <code>Ism Lavozim</code>.\n"
+        "• Lavozimni o'chirish uchun: <code>Ism — -</code>\n\n"
+        "Pastda hozirgi ro'yxat — nusxalab, lavozimlarni to'ldirib qaytarsangiz ham bo'ladi 👇")
+    text = await db.positions_export_text()
+    for i in range(0, len(text), 3500):
+        await cb.message.answer(f"<code>{text[i:i + 3500]}</code>")
+    await cb.answer()
+
+
+@router.message(PosBulk.wait, F.text)
+async def pos_bulk_apply(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    res = await db.bulk_assign_positions(msg.text)
+    await state.clear()
+    lines = [f"✅ Lavozim yozildi: {res['ok']} ta xodim"]
+    for name, pos in res["items"][:60]:
+        lines.append(f"• {name} — {pos or '(o‘chirildi)'}")
+    if len(res["items"]) > 60:
+        lines.append(f"… va yana {len(res['items']) - 60} ta")
+    if res["many"]:
+        lines.append(f"\n⚠️ Bir nechta xodim mos keldi — ismni to'liq yozing ({len(res['many'])}):")
+        lines += [f"   {x}" for x in res["many"][:20]]
+    if res["not_found"]:
+        lines.append(f"\n⚠️ Xodim topilmadi ({len(res['not_found'])}):")
+        lines += [f"   {x}" for x in res["not_found"][:30]]
+    text = "\n".join(lines)
+    for i in range(0, len(text), 3900):
+        await msg.answer(text[i:i + 3900], reply_markup=kb.admin_menu() if i + 3900 >= len(text) else None)

@@ -689,26 +689,122 @@ async def late_alert_text(emp, day):
     late = r.get("kechikish_min", 0)
     if late <= 0:
         return None
-    lines = ["⏰ <b>Kech qoldi</b>", f"👤 <b>{db.full_name(emp)}</b>"]
-    pos = db.position_label(emp)
-    if pos:
-        lines.append(f"💼 {pos}")
-    extra = []
+    vals = await _alert_values(emp, day)
+    vals.update(came=r["kirish"].strftime("%H:%M"), late=fmt_duration(late), late_min=str(late))
+    tpl = await db.get_template("tpl_late", db.DEFAULT_TPL_LATE)
+    return render_group_tpl(tpl, vals)
+
+
+GROUP_TPL_KEYS = ["name", "position", "department", "branch", "date", "start", "end",
+                  "came", "late", "late_min", "left", "early", "early_min"]
+
+
+async def _alert_values(emp, day):
+    import html
+    dep = br = ""
     if emp.get("department_id"):
         d = await db.get_department(emp["department_id"])
-        if d:
-            extra.append(f"🏢 {d['name']}")
+        dep = d["name"] if d else ""
     if emp.get("branch_id"):
         b = await db.get_branch(emp["branch_id"])
-        if b:
-            extra.append(f"🏬 {b['name']}")
-    if extra:
-        lines.append(" · ".join(extra))
-    lines += [f"📅 {uz_date(day)}",
-              f"🕘 Ish vaqti: {emp['work_start']} edi",
-              f"🟢 Keldi: {r['kirish'].strftime('%H:%M')}",
-              f"❗️ {fmt_duration(late)} kech qoldi"]
-    return "\n".join(lines)
+        br = b["name"] if b else ""
+    vals = {"name": db.full_name(emp), "position": db.position_label(emp) or "",
+            "department": dep, "branch": br, "date": uz_date(day),
+            "start": emp.get("work_start") or "", "end": emp.get("work_end") or ""}
+    return {k: html.escape(str(v)) for k, v in vals.items()}
+
+
+def render_group_tpl(tpl, vals):
+    """Shablonni to'ldiradi. Qatordagi barcha belgilar bo'sh bo'lsa (masalan lavozimi yo'q) —
+    o'sha qator butunlay tashlab yuboriladi."""
+    import re
+    out = []
+    for line in str(tpl).split("\n"):
+        keys = re.findall(r"\{(\w+)\}", line)
+        known = [k for k in keys if k in GROUP_TPL_KEYS]
+        if known and all(not str(vals.get(k, "")).strip() for k in known):
+            continue
+        out.append(safe_format(line, **{k: vals.get(k, "") for k in GROUP_TPL_KEYS}))
+    return "\n".join(out).strip()
+
+
+async def send_group_html(bot, chat_id, text):
+    """HTML bilan yuboradi; shablondagi HTML xato bo'lsa — oddiy matn sifatida qayta yuboradi."""
+    try:
+        await bot.send_message(int(chat_id), text)
+    except Exception as e:
+        if "parse" in str(e).lower() or "entit" in str(e).lower() or "tag" in str(e).lower():
+            await bot.send_message(int(chat_id), text, parse_mode=None)
+        else:
+            raise
+
+
+async def early_leave_text(emp, day):
+    """Ish grafigi tugashidan oldin ketib, qaytib kelmagan bo'lsa — guruh uchun matn, aks holda None.
+    Tushlikka chiqib qaytib kelganlar hisoblanmaydi (kunning oxirgi qaydi 'chiqish' bo'lishi kerak)."""
+    if not emp.get("count_late") or not db.has_schedule(emp):
+        return None
+    ws, we = _parse_hm(emp["work_start"]), _parse_hm(emp["work_end"])
+    end_min = we.hour * 60 + we.minute
+    if end_min <= ws.hour * 60 + ws.minute:
+        return None                      # tungi smena — hisoblanmaydi
+    events = await db.events_for_day(emp["id"], day)
+    if not events:
+        return None
+    times = sorted(((_to_naive(dt.datetime.fromisoformat(ts)), t) for t, ts in events), key=lambda x: x[0])
+    last_ts, last_type = times[-1]
+    if last_type != "out":
+        return None
+    out_min = last_ts.hour * 60 + last_ts.minute
+    early = end_min - out_min
+    if early <= 0:
+        return None
+    r = compute_day(emp, events)
+    if r:
+        await _apply_schedule(emp, day, r, await db.lesson_context(emp))
+        if r.get("lesson_based"):
+            return None
+    ex = (await db.exempt_map_for(emp["id"])).get(day, "none")
+    if ex is None:                       # butun kunga kechirim berilgan
+        return None
+    vals = await _alert_values(emp, day)
+    vals.update(left=last_ts.strftime("%H:%M"), early=fmt_duration(early), early_min=str(early))
+    tpl = await db.get_template("tpl_early", db.DEFAULT_TPL_EARLY)
+    return render_group_tpl(tpl, vals)
+
+
+async def early_leave_loop(bot):
+    """Har daqiqada: ish vaqti tugagan xodimlarni tekshiradi (tugashidan 2–40 daqiqa ichida).
+    Erta ketib qaytmaganlar haqida kech qolganlar guruhiga bir marta xabar yuboradi."""
+    import asyncio
+    import logging
+    log = logging.getLogger("early_leave")
+    await asyncio.sleep(20)
+    while True:
+        try:
+            gid = await db.get_setting("late_group_id")
+            if gid:
+                now = dt.datetime.now(TZ)
+                day = now.strftime("%Y-%m-%d")
+                now_min = now.hour * 60 + now.minute
+                for emp in await db.list_employees():
+                    if not db.has_schedule(emp):
+                        continue
+                    we = _parse_hm(emp["work_end"])
+                    end_min = we.hour * 60 + we.minute
+                    if not (end_min + 2 <= now_min <= end_min + 40):
+                        continue
+                    text = await early_leave_text(emp, day)
+                    if not text or not await db.mark_early_alert(emp["id"], day):
+                        continue
+                    try:
+                        await send_group_html(bot, gid, text)
+                    except Exception as e:
+                        await db.unmark_early_alert(emp["id"], day)
+                        log.warning("Erta ketganlik xabari yuborilmadi: %s", e)
+        except Exception as e:
+            log.warning("Erta ketish tekshiruvida xato: %s", e)
+        await asyncio.sleep(60)
 
 
 async def maybe_send_late_alert(bot, emp, etype, ts):
@@ -728,7 +824,7 @@ async def maybe_send_late_alert(bot, emp, etype, ts):
         if not await db.mark_late_alert(emp["id"], day):
             return          # bugun allaqachon yuborilgan
         try:
-            await bot.send_message(int(gid), text)
+            await send_group_html(bot, gid, text)
         except Exception as e:
             await db.unmark_late_alert(emp["id"], day)
             import logging
