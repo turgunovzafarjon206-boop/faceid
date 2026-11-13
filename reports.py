@@ -794,6 +794,8 @@ async def early_leave_loop(bot):
                     end_min = we.hour * 60 + we.minute
                     if not (end_min + 2 <= now_min <= end_min + 40):
                         continue
+                    if not await late_group_allows(emp):
+                        continue
                     text = await early_leave_text(emp, day)
                     if not text or not await db.mark_early_alert(emp["id"], day):
                         continue
@@ -807,6 +809,15 @@ async def early_leave_loop(bot):
         await asyncio.sleep(60)
 
 
+async def late_group_allows(emp):
+    """Kech qolganlar guruhi uchun tanlangan filiallar. Bo'sh = hamma filiallar; 0 = filiali yo'qlar."""
+    raw = (await db.get_setting("late_group_branches") or "").strip()
+    if not raw:
+        return True
+    allowed = {int(x) for x in raw.split(",") if x.strip().lstrip("-").isdigit()}
+    return (emp.get("branch_id") or 0) in allowed
+
+
 async def maybe_send_late_alert(bot, emp, etype, ts):
     """Kirish qayd etilganda: xodim kech qolgan bo'lsa, sozlangan guruhga bir marta xabar yuboradi."""
     try:
@@ -818,6 +829,8 @@ async def maybe_send_late_alert(bot, emp, etype, ts):
         day = ts.strftime("%Y-%m-%d")
         if day != dt.datetime.now(TZ).strftime("%Y-%m-%d"):
             return          # eski (tarixdan o'qilgan) qaydlar uchun yuborilmaydi
+        if not await late_group_allows(emp):
+            return          # bu filial guruhga yuborilmaydi
         text = await late_alert_text(emp, day)
         if not text:
             return

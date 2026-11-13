@@ -3065,6 +3065,7 @@ def _lategrp_kb(on):
             [InlineKeyboardButton(text="📝 Kech qolish matni", callback_data="tpl:late"),
              InlineKeyboardButton(text="📝 Erta ketish matni", callback_data="tpl:early")]]
     if on:
+        rows.append([InlineKeyboardButton(text="🏬 Filiallarni tanlash", callback_data="lg:br")])
         rows.append([InlineKeyboardButton(text="🧪 Sinov xabari", callback_data="lg:test")])
         rows.append([InlineKeyboardButton(text="⛔️ O'chirish", callback_data="lg:off")])
     rows.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="a:fidback")])
@@ -3074,7 +3075,8 @@ def _lategrp_kb(on):
 async def _lategrp_text():
     gid = await db.get_setting("late_group_id")
     title = await db.get_setting("late_group_title")
-    status = (f"✅ Yoqilgan: <b>{title or 'guruh'}</b> (<code>{gid}</code>)" if gid else "⛔️ O'chirilgan")
+    status = (f"✅ Yoqilgan: <b>{title or 'guruh'}</b> (<code>{gid}</code>)\n"
+              f"🏬 Filiallar: {await _lg_branches_label()}" if gid else "⛔️ O'chirilgan")
     return ("🚨 <b>Kech qolgan / erta ketganlar guruhi</b>\n\n"
             "⏰ Xodim ish vaqtidan <b>kech kelsa</b> — darhol xabar boradi:\n"
             "<i>«Ish vaqti 09:00 edi — 09:17 da keldi, 17 daqiqa kech qoldi»</i>\n"
@@ -3126,7 +3128,92 @@ async def lategrp_save(msg: Message, state: FSMContext):
     await db.set_setting("late_group_id", str(gid))
     await db.set_setting("late_group_title", getattr(chat, "title", None) or str(gid))
     await state.clear()
-    await msg.answer(await _lategrp_text(), reply_markup=_lategrp_kb(True))
+    if await db.list_branches():
+        await msg.answer(f"✅ Guruh saqlandi: <b>{getattr(chat, 'title', None) or gid}</b>")
+        await _lg_branch_picker(msg, state)
+    else:
+        await msg.answer(await _lategrp_text(), reply_markup=_lategrp_kb(True))
+
+
+# --- Guruhga qaysi filiallar xodimlari yuborilsin ---
+async def _lg_selected():
+    raw = (await db.get_setting("late_group_branches") or "").strip()
+    return {int(x) for x in raw.split(",") if x.strip().lstrip("-").isdigit()}
+
+
+async def _lg_branches_label():
+    sel = await _lg_selected()
+    if not sel:
+        return "hammasi"
+    names = []
+    for b in await db.list_branches():
+        if b["id"] in sel:
+            names.append(b["name"])
+    if 0 in sel:
+        names.append("filiali belgilanmaganlar")
+    return ", ".join(names) or "hammasi"
+
+
+def _lg_branch_kb(branches, sel):
+    rows = []
+    for b in branches:
+        mark = "☑️" if b["id"] in sel else "⬜️"
+        rows.append([InlineKeyboardButton(text=f"{mark} {b['name']} ({b['count']})"[:60],
+                                          callback_data=f"lgb:t:{b['id']}")])
+    rows.append([InlineKeyboardButton(text=f"{'☑️' if 0 in sel else '⬜️'} Filiali belgilanmaganlar",
+                                      callback_data="lgb:t:0")])
+    rows.append([InlineKeyboardButton(text="🌐 Hamma filiallar", callback_data="lgb:all")])
+    label = f"💾 Saqlash ({len(sel)} ta filial)" if sel else "💾 Saqlash (hamma filiallar)"
+    rows.append([InlineKeyboardButton(text=label, callback_data="lgb:save")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _lg_branch_picker(target, state):
+    sel = await _lg_selected()
+    await state.update_data(lgb_sel=list(sel))
+    await target.answer(
+        "🏬 <b>Qaysi filiallar xodimlari bu guruhga yuborilsin?</b>\n"
+        "Kerakli filiallarni ☑️ belgilab, «💾 Saqlash» bosing.\n"
+        "Hech biri belgilanmasa — hamma filiallar yuboriladi.",
+        reply_markup=_lg_branch_kb(await db.list_branches(), sel))
+
+
+@router.callback_query(F.data == "lg:br")
+async def lategrp_branches(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    if not await db.list_branches():
+        return await cb.answer("Filiallar yo'q — hamma xodimlar yuboriladi", show_alert=True)
+    await _lg_branch_picker(cb.message, state)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("lgb:"))
+async def lategrp_branch_action(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer()
+    parts = cb.data.split(":")
+    sel = set((await state.get_data()).get("lgb_sel", []))
+    if parts[1] == "t":
+        sel ^= {int(parts[2])}
+    elif parts[1] == "all":
+        sel = set()
+    elif parts[1] == "save":
+        await db.set_setting("late_group_branches", ",".join(str(x) for x in sorted(sel)))
+        await state.update_data(lgb_sel=[])
+        await cb.answer("Saqlandi ✅")
+        try:
+            await cb.message.edit_text(f"✅ Filiallar saqlandi: <b>{await _lg_branches_label()}</b>")
+        except Exception:
+            pass
+        await cb.message.answer(await _lategrp_text(), reply_markup=_lategrp_kb(True))
+        return
+    await state.update_data(lgb_sel=list(sel))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=_lg_branch_kb(await db.list_branches(), sel))
+    except Exception:
+        pass
+    await cb.answer()
 
 
 @router.callback_query(F.data == "lg:test")
